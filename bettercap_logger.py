@@ -2,7 +2,7 @@
 """
 ----------------------------------------------------------------------------------------------------
 Script Name: bettercap_logger.py
-Version: 1.9.2
+Version: 1.0
 Author: Michael Du Preez
 Date: 2025-03-17
 
