@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# This line tells the system to use Python 3 to run this script.
 """
 ----------------------------------------------------------------------------------------------------
 Script Name: gps_logger.py
@@ -31,36 +32,48 @@ Prerequisites:
 # =============================================================================
 # IMPORTS
 # =============================================================================
-import subprocess    # To execute shell commands (e.g., for socat and killing processes).
-import time          # For implementing delays and handling timing operations.
+import subprocess    # To execute shell commands (e.g., for socat and killing processes).  # Import the module used to run external commands (shell commands).
+import time          # For implementing delays and handling timing operations.  # Module providing functions related to time, like delays.
 import os            # For operating system interactions, such as reading device files.
+# Module to interact with the operating system, e.g., checking if files exist.
 import json          # To parse the JSON settings file.
+# Module to load and read settings from a JSON file.
 import fcntl         # To set file descriptors to non-blocking mode.
+# Module to set the device file in a non-blocking (asynchronous) read mode.
 import logging       # To log informational, debugging, and error messages.
+# Module for detailed logging and debugging.
 import argparse      # To parse command-line arguments.
+# Module for handling command-line arguments passed to the script.
 import signal        # For handling OS signals (SIGINT, SIGTERM) gracefully.
+# Module for catching signals (like Ctrl+C) to shut down cleanly.
 import sys           # For system-specific functions like exiting.
+# Module that provides functions to interact closely with the system.
 from typing import Optional, Dict  # For adding type hints.
+# This allows specifying detailed types for clearer code.
 from pathlib import Path  # For robust file existence checks.
+# Simplifies operations with file and directory paths.
 import tempfile      # For creating temporary files during tests.
+# Used to handle temporary files during tests.
 
 # =============================================================================
 # CONSTANTS & GLOBALS
 # =============================================================================
-DEFAULT_SETTINGS_FILE = "settings.json"  # Default JSON file for settings.
-DEFAULT_DEVICE = "/dev/ttyGPS0"          # Default virtual GPS device.
-DEFAULT_READ_DURATION = 2                # Duration (in seconds) to attempt reading data.
-DEFAULT_DELAY = 5                        # Delay (in seconds) between data flow checks.
-DEFAULT_SOCAT_ATTEMPTS = 10              # Maximum attempts to start socat.
-DEFAULT_FLOW_ATTEMPTS = 10               # Maximum attempts to verify GPS data flow.
+DEFAULT_SETTINGS_FILE = "settings.json"  # Default JSON file for settings.  # This is the default JSON settings file the script looks for.
+DEFAULT_DEVICE = "/dev/ttyGPS0"          # Default virtual GPS device.  # Default file path for the virtual GPS device created by socat.
+DEFAULT_READ_DURATION = 2                # Duration (in seconds) to attempt reading data.  # How many seconds the script spends checking GPS data each time.
+DEFAULT_DELAY = 5                        # Delay (in seconds) between data flow checks.  # Delay between two consecutive GPS checks.
+DEFAULT_SOCAT_ATTEMPTS = 10              # Maximum attempts to start socat.  # How many times the script tries to start the GPS service before giving up.
+DEFAULT_FLOW_ATTEMPTS = 10               # Maximum attempts to verify GPS data flow.  # Number of attempts to verify that GPS data is actively being received.
 
 # Global flag to indicate that a shutdown has been requested (e.g., via Ctrl+C)
 shutdown_requested = False
+# Indicates whether the script is shutting down (e.g., Ctrl+C pressed).
 
 # =============================================================================
 # SIGNAL HANDLING
 # =============================================================================
 def signal_handler(sig, frame):
+# Function to handle signals (such as Ctrl+C) gracefully.
     """
     Handle termination signals (SIGINT, SIGTERM) to perform a graceful shutdown.
 
@@ -79,13 +92,14 @@ def signal_handler(sig, frame):
     sys.exit(0)               # Exit the script cleanly.
 
 # Register the signal handler for SIGINT (Ctrl+C) and SIGTERM.
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)  # Registers the above signal handler for graceful exit.
+signal.signal(signal.SIGTERM, signal_handler)  # Registers the above signal handler for graceful exit.
 
 # =============================================================================
 # UTILITY FUNCTION FOR RUNNING SHELL COMMANDS
 # =============================================================================
 def run_command(command: str, check: bool = True, suppress_error: bool = False, return_output: bool = False) -> Optional[subprocess.CompletedProcess]:
+# Function to run shell commands safely and handle outputs or errors.
     """
     Execute a shell command and optionally return its output.
 
@@ -128,6 +142,7 @@ def run_command(command: str, check: bool = True, suppress_error: bool = False, 
 # CLASS: SocatManager
 # =============================================================================
 class SocatManager:
+# Manages 'socat', which makes UDP data appear as a GPS device file.
     """
     Class to manage socat processes which create the virtual GPS device.
 
@@ -202,6 +217,7 @@ class SocatManager:
 # CLASS: GPSDeviceManager
 # =============================================================================
 class GPSDeviceManager:
+# Manages and checks the virtual GPS device, ensuring GPS data is flowing.
     """
     Class to handle operations on the virtual GPS device.
 
@@ -210,7 +226,7 @@ class GPSDeviceManager:
         - get_last_line: Read data from the device and return the last line.
         - is_data_flowing: Determine if new data is arriving from the device.
     """
-    def __init__(self, device: str, read_duration: int = DEFAULT_READ_DURATION):
+    def __init__(self, device: str, read_duration: int = DEFAULT_READ_DURATION):  # How many seconds the script spends checking GPS data each time.
         """
         Initialize the GPSDeviceManager.
 
@@ -266,7 +282,7 @@ class GPSDeviceManager:
             logging.error(f"Unable to read from {self.device}: {e}", exc_info=True)
         return last_line
 
-    def is_data_flowing(self, delay: int = DEFAULT_DELAY) -> bool:
+    def is_data_flowing(self, delay: int = DEFAULT_DELAY) -> bool:  # Delay between two consecutive GPS checks.
         """
         Verify that data is actively flowing from the GPS device.
 
@@ -321,6 +337,7 @@ def load_settings(settings_file: str) -> Optional[Dict]:
 # CLASS: GPSSetup
 # =============================================================================
 class GPSSetup:
+# Coordinates setup and checks of GPS device and data flow.
     """
     Class to coordinate the entire GPS device setup process.
 
@@ -415,6 +432,7 @@ class GPSSetup:
 # COMMAND-LINE ARGUMENT PARSING
 # =============================================================================
 def parse_arguments() -> argparse.Namespace:
+# Parses command-line arguments to customize script behavior.
     """
     Parse command-line arguments to allow overriding default configuration values.
 
@@ -424,17 +442,17 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Set up and monitor a virtual GPS device using socat."
     )
-    parser.add_argument("--settings", type=str, default=DEFAULT_SETTINGS_FILE,
+    parser.add_argument("--settings", type=str, default=DEFAULT_SETTINGS_FILE,  # This is the default JSON settings file the script looks for.
                         help="Path to the settings JSON file.")
-    parser.add_argument("--device", type=str, default=DEFAULT_DEVICE,
+    parser.add_argument("--device", type=str, default=DEFAULT_DEVICE,  # Default file path for the virtual GPS device created by socat.
                         help="Path to the virtual GPS device.")
-    parser.add_argument("--read-duration", type=int, default=DEFAULT_READ_DURATION,
+    parser.add_argument("--read-duration", type=int, default=DEFAULT_READ_DURATION,  # How many seconds the script spends checking GPS data each time.
                         help="Duration (in seconds) to read data from the device.")
-    parser.add_argument("--delay", type=int, default=DEFAULT_DELAY,
+    parser.add_argument("--delay", type=int, default=DEFAULT_DELAY,  # Delay between two consecutive GPS checks.
                         help="Delay (in seconds) between data flow checks.")
-    parser.add_argument("--socat-attempts", type=int, default=DEFAULT_SOCAT_ATTEMPTS,
+    parser.add_argument("--socat-attempts", type=int, default=DEFAULT_SOCAT_ATTEMPTS,  # How many times the script tries to start the GPS service before giving up.
                         help="Number of attempts to start socat.")
-    parser.add_argument("--flow-attempts", type=int, default=DEFAULT_FLOW_ATTEMPTS,
+    parser.add_argument("--flow-attempts", type=int, default=DEFAULT_FLOW_ATTEMPTS,  # Number of attempts to verify that GPS data is actively being received.
                         help="Number of attempts to verify GPS data flow.")
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -447,6 +465,7 @@ def parse_arguments() -> argparse.Namespace:
 # TESTING FUNCTIONALITY
 # =============================================================================
 def run_tests() -> None:
+# Function to run internal tests, checking critical features.
     """
     Run simple test cases to validate the core functions.
 
@@ -490,6 +509,7 @@ def run_tests() -> None:
 # MAIN FUNCTION
 # =============================================================================
 def main() -> None:
+# The primary function of the script, running the overall setup.
     """
     Main entry point for the script.
 
@@ -537,4 +557,5 @@ def main() -> None:
 # EXECUTION START POINT
 # =============================================================================
 if __name__ == "__main__":
+# Ensures this script runs the 'main' function when executed directly.
     main()
