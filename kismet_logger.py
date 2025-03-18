@@ -2,7 +2,7 @@
 """
 ----------------------------------------------------------------------------------------------------
 Script Name: kismet_logger.py
-Version: 1.9.2
+Version: 1.0
 Author: Michael Du Preez
 Date: 2025-03-18
 
@@ -20,7 +20,7 @@ Usage:
 Prerequisites:
     - Python 3.x must be installed.
     - Kismet must be installed and available in your system's PATH.
-    - The gps_launcher.py script must exist in the same directory and be executable.
+    - The gps_logger.py script must exist in the same directory and be executable.
     - A kismet-generated .wiglecsv file must be present in the specified log directory.
 ----------------------------------------------------------------------------------------------------
 """
@@ -185,13 +185,13 @@ def run_command(command: str, check: bool = True, suppress_error: bool = False, 
 
 def run_gps_checker() -> None:
     """
-    Run gps_launcher.py and stream its output in real time.
-    (Output from gps_launcher.py is not prefixed by [KISMET].)
+    Run gps_logger.py and stream its output in real time.
+    (Output from gps_logger.py is not prefixed by [KISMET].)
     """
-    logging.info("Running gps_launcher.py before launching kismet...")
+    logging.info("Running gps_logger.py before launching kismet...")
     try:
         process = subprocess.Popen(
-            ["python3", "-u", "gps_launcher.py"],
+            ["python3", "-u", "gps_logger.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True
@@ -205,10 +205,10 @@ def run_gps_checker() -> None:
                 sys.stdout.flush()
         retcode = process.poll()
         if retcode != 0:
-            logging.error(f"gps_launcher.py exited with code {retcode}.")
+            logging.error(f"gps_logger.py exited with code {retcode}.")
             sys.exit(retcode)
     except Exception as e:
-        logging.error(f"Failed to run gps_launcher.py: {e}", exc_info=True)
+        logging.error(f"Failed to run gps_logger.py: {e}", exc_info=True)
         sys.exit(1)
 
 class KismetManager:
@@ -328,7 +328,7 @@ def main() -> None:
       1. Parse command-line arguments and configure logging with a green [KISMET] prefix.
       2. Ensure the log directory exists, kill existing kismet processes, and clean old files.
          (Note: No .kismet output file will ever be deleted.)
-      3. Launch gps_launcher.py in a separate thread and then launch kismet in daemon mode.
+      3. Launch gps_logger.py in a separate thread and then launch kismet in daemon mode.
       4. Enter a polling loop (approximately once per second) that:
          - Reads the latest .wiglecsv file (if available)
          - Updates the in-memory best_entries dictionary
@@ -369,7 +369,7 @@ def main() -> None:
     # Clean up old files (this now leaves all .kismet files intact).
     manager.cleanup_old_files()
 
-    # Start gps_launcher.py in a separate daemon thread.
+    # Start gps_logger.py in a separate daemon thread.
     gps_thread = threading.Thread(target=run_gps_checker, daemon=True)
     gps_thread.start()
 
