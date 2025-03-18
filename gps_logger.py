@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 ----------------------------------------------------------------------------------------------------
-Script Name: gps_launcher.py
-Version: 2.2 (Enhanced with color-coded logging prefix)
+Script Name: gps_logger.py
+Version: 1.0
 Author: Michael Du Preez
 Date: 2025-03-16
 
