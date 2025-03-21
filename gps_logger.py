@@ -1,561 +1,300 @@
 #!/usr/bin/env python3
-# This line tells the system to use Python 3 to run this script.
-"""
-----------------------------------------------------------------------------------------------------
-Script Name: gps_logger.py
-Version: 1.0
-Author: Michael Du Preez
-Date: 2025-03-16
+import socket
+import json
+import os
+import sys
+import pty
+import subprocess
+import fcntl
+import time
+from loguru import logger
 
-Overview:
-    This script sets up and monitors a virtual GPS device that is created from UDP data via the
-    'socat' utility. It uses a JSON settings file to obtain the UDP IP and Port, then ensures that
-    a virtual device (such as /dev/ttyGPS0) exists and is receiving live GPS data.
-
-Functionality:
-    - Loads configuration (UDP IP and port) from a JSON settings file.
-    - Uses two helper classes:
-         • SocatManager: Manages socat processes (checks, kills, and starts them).
-         • GPSDeviceManager: Checks for the device, reads data, and verifies that GPS data flows.
-    - If the device is present and data is flowing, no further action is taken.
-    - Otherwise, any existing socat processes are terminated, and new ones are started with retries.
-    - Permissions are set on the device and data flow is verified.
-    - A built-in test suite is available with the '--test' flag.
-
-Prerequisites:
-    - A valid JSON settings file (default: settings.json) with keys "udp_ip" and "udp_port".
-    - 'socat' must be installed and accessible (sudo privileges may be required).
-    - Python 3.x is required.
-----------------------------------------------------------------------------------------------------
-"""
-
-# =============================================================================
-# IMPORTS
-# =============================================================================
-import subprocess    # To execute shell commands (e.g., for socat and killing processes).  # Import the module used to run external commands (shell commands).
-import time          # For implementing delays and handling timing operations.  # Module providing functions related to time, like delays.
-import os            # For operating system interactions, such as reading device files.
-# Module to interact with the operating system, e.g., checking if files exist.
-import json          # To parse the JSON settings file.
-# Module to load and read settings from a JSON file.
-import fcntl         # To set file descriptors to non-blocking mode.
-# Module to set the device file in a non-blocking (asynchronous) read mode.
-import logging       # To log informational, debugging, and error messages.
-# Module for detailed logging and debugging.
-import argparse      # To parse command-line arguments.
-# Module for handling command-line arguments passed to the script.
-import signal        # For handling OS signals (SIGINT, SIGTERM) gracefully.
-# Module for catching signals (like Ctrl+C) to shut down cleanly.
-import sys           # For system-specific functions like exiting.
-# Module that provides functions to interact closely with the system.
-from typing import Optional, Dict  # For adding type hints.
-# This allows specifying detailed types for clearer code.
-from pathlib import Path  # For robust file existence checks.
-# Simplifies operations with file and directory paths.
-import tempfile      # For creating temporary files during tests.
-# Used to handle temporary files during tests.
-
-# =============================================================================
-# CONSTANTS & GLOBALS
-# =============================================================================
-DEFAULT_SETTINGS_FILE = "settings.json"  # Default JSON file for settings.  # This is the default JSON settings file the script looks for.
-DEFAULT_DEVICE = "/dev/ttyGPS0"          # Default virtual GPS device.  # Default file path for the virtual GPS device created by socat.
-DEFAULT_READ_DURATION = 2                # Duration (in seconds) to attempt reading data.  # How many seconds the script spends checking GPS data each time.
-DEFAULT_DELAY = 5                        # Delay (in seconds) between data flow checks.  # Delay between two consecutive GPS checks.
-DEFAULT_SOCAT_ATTEMPTS = 10              # Maximum attempts to start socat.  # How many times the script tries to start the GPS service before giving up.
-DEFAULT_FLOW_ATTEMPTS = 10               # Maximum attempts to verify GPS data flow.  # Number of attempts to verify that GPS data is actively being received.
-
-# Global flag to indicate that a shutdown has been requested (e.g., via Ctrl+C)
-shutdown_requested = False
-# Indicates whether the script is shutting down (e.g., Ctrl+C pressed).
-
-# =============================================================================
-# SIGNAL HANDLING
-# =============================================================================
-def signal_handler(sig, frame):
-# Function to handle signals (such as Ctrl+C) gracefully.
-    """
-    Handle termination signals (SIGINT, SIGTERM) to perform a graceful shutdown.
-
-    - Sets a global shutdown flag.
-    - Kills any running socat processes.
-    - Exits the program.
-
-    Args:
-        sig: Signal number.
-        frame: Current stack frame (unused).
-    """
-    global shutdown_requested
-    logging.info("Shutdown signal received. Initiating cleanup...")
-    shutdown_requested = True  # Notify the program to exit any running loops.
-    SocatManager.kill_global()  # Kill any socat processes (using a class method).
-    sys.exit(0)               # Exit the script cleanly.
-
-# Register the signal handler for SIGINT (Ctrl+C) and SIGTERM.
-signal.signal(signal.SIGINT, signal_handler)  # Registers the above signal handler for graceful exit.
-signal.signal(signal.SIGTERM, signal_handler)  # Registers the above signal handler for graceful exit.
-
-# =============================================================================
-# UTILITY FUNCTION FOR RUNNING SHELL COMMANDS
-# =============================================================================
-def run_command(command: str, check: bool = True, suppress_error: bool = False, return_output: bool = False) -> Optional[subprocess.CompletedProcess]:
-# Function to run shell commands safely and handle outputs or errors.
-    """
-    Execute a shell command and optionally return its output.
-
-    Args:
-        command (str): The shell command to execute.
-        check (bool): Raise an exception if the command exits non-zero.
-        suppress_error (bool): If True, suppress error messages.
-        return_output (bool): If True, return the command's stdout as a string.
-
-    Returns:
-        subprocess.CompletedProcess: If not returning output.
-        str: The stdout output if return_output is True.
-        None: If an error occurs and is suppressed.
-    """
+def load_settings(file_path="gps_settings.json"):
+    default_settings = {
+        "GPS_SETTINGS": {
+            "udp_ip": "172.20.10.3",
+            "udp_port": 11123,
+            "buffer_size": 4096,
+            "socket_timeout_sec": 10,
+            "log_gps_data": True,
+            "gps_log_path": "~/.local/bin/wardriver/logs/gps_data.log",
+            "requests_dir": "~/.local/bin/wardriver/logs/"
+        },
+        "LOGGING_SETTINGS": {
+            "log_to_file": True,
+            "log_to_terminal": True,
+            "log_file_path": "~/.local/bin/wardriver/logs/gps_monitor.log",
+            "log_level": "TRACE"
+        }
+    }
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            check=check,
-            stdout=subprocess.PIPE,  # Capture standard output.
-            stderr=subprocess.PIPE   # Capture standard error.
-        )
-        if return_output:
-            output = result.stdout.decode().strip()  # Decode the output.
-            logging.debug(f"Command output for '{command}': {output}")
-            return output
-        if result.returncode == 0:
-            if not suppress_error:
-                logging.info(f"Command succeeded: {command}")
-        else:
-            if not suppress_error:
-                logging.error(f"Command failed ({command}): {result.stderr.decode().strip()}")
-        return result
-    except subprocess.CalledProcessError as cpe:
-        if not suppress_error:
-            logging.error(f"Exception while executing command '{command}': {cpe}", exc_info=True)
-        return None
-
-# =============================================================================
-# CLASS: SocatManager
-# =============================================================================
-class SocatManager:
-# Manages 'socat', which makes UDP data appear as a GPS device file.
-    """
-    Class to manage socat processes which create the virtual GPS device.
-
-    Methods:
-        - is_running: Check if a socat process is running.
-        - kill: Kill all running socat processes.
-        - start: Start a new socat process with given UDP parameters.
-    """
-    def __init__(self, device: str, udp_ip: str, udp_port: int):
-        """
-        Initialize the SocatManager with the device and UDP configuration.
-
-        Args:
-            device (str): The virtual GPS device path.
-            udp_ip (str): The UDP IP address to bind.
-            udp_port (int): The UDP port to listen on.
-        """
-        self.device = device
-        self.udp_ip = udp_ip
-        self.udp_port = udp_port
-
-    def is_running(self) -> bool:
-        """
-        Check if any socat process is currently running.
-
-        Returns:
-            bool: True if a socat process is found, False otherwise.
-        """
-        result = run_command("ps aux | grep '[s]ocat'", return_output=True, suppress_error=True)
-        if result:
-            for line in result.splitlines():
-                if "socat" in line and "grep" not in line:
-                    logging.debug(f"socat process found: {line}")
-                    return True
-        return False
-
-    @staticmethod
-    def kill_global() -> None:
-        """
-        Kill all running socat processes using pkill.
-        """
-        if run_command("ps aux | grep '[s]ocat'", return_output=True, suppress_error=True):
-            run_command("sudo pkill -f socat", check=False, suppress_error=True)
-            time.sleep(1)  # Allow time for termination.
-            logging.info("Killed existing socat process(es).")
-        else:
-            logging.info("No existing socat process found to kill.")
-
-    def kill(self) -> None:
-        """
-        Kill socat processes using the static method.
-        """
-        SocatManager.kill_global()
-
-    def start(self) -> bool:
-        """
-        Start a socat process that creates a virtual GPS device.
-
-        Returns:
-            bool: True if the socat process is running after the attempt, False otherwise.
-        """
-        # Construct the socat command with the UDP parameters.
-        cmd = (
-            f"sudo socat -d -d pty,raw,echo=0,link={self.device} "
-            f"UDP4-RECV:{self.udp_port},bind={self.udp_ip} > /dev/null 2>&1 &"
-        )
-        run_command(cmd, check=False, suppress_error=True)
-        time.sleep(1)  # Wait briefly to allow socat to initialize.
-        return self.is_running()
-
-# =============================================================================
-# CLASS: GPSDeviceManager
-# =============================================================================
-class GPSDeviceManager:
-# Manages and checks the virtual GPS device, ensuring GPS data is flowing.
-    """
-    Class to handle operations on the virtual GPS device.
-
-    Methods:
-        - exists: Check if the device file exists.
-        - get_last_line: Read data from the device and return the last line.
-        - is_data_flowing: Determine if new data is arriving from the device.
-    """
-    def __init__(self, device: str, read_duration: int = DEFAULT_READ_DURATION):  # How many seconds the script spends checking GPS data each time.
-        """
-        Initialize the GPSDeviceManager.
-
-        Args:
-            device (str): The path to the virtual GPS device.
-            read_duration (int): Time in seconds to read data per attempt.
-        """
-        self.device = device
-        self.read_duration = read_duration
-
-    def exists(self) -> bool:
-        """
-        Check if the virtual GPS device file exists.
-
-        Returns:
-            bool: True if the device exists, False otherwise.
-        """
-        exists = Path(self.device).exists()
-        logging.debug(f"GPS device {self.device} existence check: {exists}")
-        return exists
-
-    def get_last_line(self) -> str:
-        """
-        Read data from the GPS device in non-blocking mode and return the last complete line.
-
-        Returns:
-            str: The last line of data read, or an empty string if no data is received.
-        """
-        last_line = ""
+        with open(file_path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Settings file '{file_path}' missing/invalid. Creating default...")
         try:
-            # Open the device in binary mode with no buffering.
-            with open(self.device, "rb", buffering=0) as gps_stream:
-                fd = gps_stream.fileno()  # Get file descriptor.
-                # Set the file descriptor to non-blocking mode.
-                fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK)
-                start_time = time.time()
-                while (time.time() - start_time) < self.read_duration:
-                    if shutdown_requested:
-                        logging.info("Shutdown requested during data read; exiting loop.")
-                        break
-                    try:
-                        chunk = os.read(fd, 4096)
-                        if chunk:
-                            decoded = chunk.decode(errors="ignore")
-                            lines = decoded.splitlines()
-                            if lines:
-                                last_line = lines[-1]
-                    except BlockingIOError:
-                        # No data available; continue loop.
-                        pass
-                    time.sleep(0.1)  # Short delay to reduce CPU load.
+            with open(file_path, "w") as f:
+                json.dump(default_settings, f, indent=2)
+            print(f"Default settings written to '{file_path}'.")
+            return default_settings
         except Exception as e:
-            logging.error(f"Unable to read from {self.device}: {e}", exc_info=True)
-        return last_line
-
-    def is_data_flowing(self, delay: int = DEFAULT_DELAY) -> bool:  # Delay between two consecutive GPS checks.
-        """
-        Verify that data is actively flowing from the GPS device.
-
-        The function captures two snapshots of data separated by a delay. If the snapshots differ,
-        it is assumed that data is flowing.
-
-        Args:
-            delay (int): Time in seconds to wait between snapshots.
-
-        Returns:
-            bool: True if data flow is detected, False otherwise.
-        """
-        logging.info(f"Verifying GPS data flow with a delay of {delay} seconds.")
-        first_line = self.get_last_line()
-        logging.debug(f"First snapshot: {first_line}")
-        time.sleep(delay)
-        second_line = self.get_last_line()
-        logging.debug(f"Second snapshot: {second_line}")
-        if not second_line or first_line == second_line:
-            logging.error("GPS data is not flowing (snapshots are identical or empty).")
-            return False
-        logging.info("GPS data is actively changing (flowing).")
-        return True
-
-# =============================================================================
-# FUNCTION: load_settings
-# =============================================================================
-def load_settings(settings_file: str) -> Optional[Dict]:
-    """
-    Load configuration settings from a JSON file.
-
-    Args:
-        settings_file (str): Path to the JSON configuration file.
-
-    Returns:
-        dict: Configuration settings if loaded successfully, None otherwise.
-    """
-    try:
-        with open(settings_file, "r") as f:
-            settings = json.load(f)
-        logging.debug(f"Settings loaded successfully: {settings}")
-        return settings
-    except FileNotFoundError as fnf_err:
-        logging.error(f"Settings file not found: {fnf_err}")
-    except json.JSONDecodeError as json_err:
-        logging.error(f"Error decoding JSON from settings file: {json_err}")
+            print(f"Failed to create settings file: {e}")
+            sys.exit(1)
     except Exception as e:
-        logging.error(f"Unexpected error while loading settings: {e}", exc_info=True)
-    return None
-
-# =============================================================================
-# CLASS: GPSSetup
-# =============================================================================
-class GPSSetup:
-# Coordinates setup and checks of GPS device and data flow.
-    """
-    Class to coordinate the entire GPS device setup process.
-
-    It loads configuration settings, verifies device existence and data flow, manages socat
-    processes, and ensures that the virtual device is properly configured.
-    """
-    def __init__(self, settings_file: str, device: str, socat_attempts: int, flow_attempts: int):
-        """
-        Initialize the GPSSetup instance.
-
-        Args:
-            settings_file (str): Path to the JSON settings file.
-            device (str): Path to the virtual GPS device.
-            socat_attempts (int): Maximum number of attempts to start socat.
-            flow_attempts (int): Maximum number of attempts to verify GPS data flow.
-
-        Raises:
-            ValueError: If the settings cannot be loaded or required keys are missing.
-        """
-        self.settings_file = settings_file
-        self.device = device
-        self.socat_attempts = socat_attempts
-        self.flow_attempts = flow_attempts
-
-        # Load configuration settings.
-        self.settings = load_settings(settings_file)
-        if not self.settings:
-            raise ValueError("Could not load settings from the file.")
-        self.udp_ip = self.settings.get("udp_ip")
-        self.udp_port = self.settings.get("udp_port")
-        if not self.udp_ip or not self.udp_port:
-            raise ValueError("Settings file is missing 'udp_ip' or 'udp_port'.")
-
-        # Initialize helper classes for socat and GPS device management.
-        self.socat_manager = SocatManager(device=self.device, udp_ip=self.udp_ip, udp_port=self.udp_port)
-        self.gps_device_manager = GPSDeviceManager(device=self.device)
-
-    def run(self) -> None:
-        """
-        Run the GPS device setup process.
-
-        Steps:
-          1. Verify the device exists and that data is flowing.
-          2. If data is stagnant or the device is missing, kill any running socat processes.
-          3. Attempt to start socat until it runs.
-          4. Set device permissions and verify GPS data flow.
-        """
-        logging.info(f"Using UDP IP: {self.udp_ip} and UDP Port: {self.udp_port}")
-
-        # Check if the device exists and data is flowing.
-        if self.gps_device_manager.exists():
-            logging.info("GPS device found. Verifying data flow...")
-            if self.gps_device_manager.is_data_flowing():
-                logging.info("GPS data is flowing. No restart required.")
-                return
-            else:
-                logging.warning("GPS device exists but data is stagnant. Restarting socat...")
-        else:
-            logging.info("GPS device not found. Proceeding to set up socat.")
-
-        # Kill any running socat processes.
-        self.socat_manager.kill()
-
-        # Attempt to start socat repeatedly.
-        for attempt in range(self.socat_attempts):
-            if shutdown_requested:
-                logging.info("Shutdown requested during socat startup attempts.")
-                return
-            if self.socat_manager.start():
-                logging.info(f"socat started successfully after {attempt + 1} attempt(s).")
-                break
-        else:
-            logging.error("GPS Connection failed after multiple attempts. Exiting setup.")
-            return
-
-        # If the virtual device now exists, set proper permissions.
-        if self.gps_device_manager.exists():
-            run_command(f"sudo chmod 666 {self.device}", check=False, suppress_error=True)
-            # Verify that GPS data is flowing, retrying if necessary.
-            for attempt in range(self.flow_attempts):
-                if shutdown_requested:
-                    logging.info("Shutdown requested during GPS data flow verification.")
-                    return
-                if self.gps_device_manager.is_data_flowing():
-                    logging.info(f"GPS data is flowing after {attempt + 1} attempt(s).")
-                    return
-                logging.warning(f"GPS data is still not flowing. Retrying ({attempt + 1}/{self.flow_attempts})...")
-                time.sleep(5)
-            logging.error("GPS data is not flowing after multiple attempts. Please check the GPS data source.")
-
-# =============================================================================
-# COMMAND-LINE ARGUMENT PARSING
-# =============================================================================
-def parse_arguments() -> argparse.Namespace:
-# Parses command-line arguments to customize script behavior.
-    """
-    Parse command-line arguments to allow overriding default configuration values.
-
-    Returns:
-        argparse.Namespace: Parsed command-line arguments.
-    """
-    parser = argparse.ArgumentParser(
-        description="Set up and monitor a virtual GPS device using socat."
-    )
-    parser.add_argument("--settings", type=str, default=DEFAULT_SETTINGS_FILE,  # This is the default JSON settings file the script looks for.
-                        help="Path to the settings JSON file.")
-    parser.add_argument("--device", type=str, default=DEFAULT_DEVICE,  # Default file path for the virtual GPS device created by socat.
-                        help="Path to the virtual GPS device.")
-    parser.add_argument("--read-duration", type=int, default=DEFAULT_READ_DURATION,  # How many seconds the script spends checking GPS data each time.
-                        help="Duration (in seconds) to read data from the device.")
-    parser.add_argument("--delay", type=int, default=DEFAULT_DELAY,  # Delay between two consecutive GPS checks.
-                        help="Delay (in seconds) between data flow checks.")
-    parser.add_argument("--socat-attempts", type=int, default=DEFAULT_SOCAT_ATTEMPTS,  # How many times the script tries to start the GPS service before giving up.
-                        help="Number of attempts to start socat.")
-    parser.add_argument("--flow-attempts", type=int, default=DEFAULT_FLOW_ATTEMPTS,  # Number of attempts to verify that GPS data is actively being received.
-                        help="Number of attempts to verify GPS data flow.")
-    parser.add_argument("--log-level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                        help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).")
-    parser.add_argument("--test", action="store_true",
-                        help="Run test cases for the GPS setup functions.")
-    return parser.parse_args()
-
-# =============================================================================
-# TESTING FUNCTIONALITY
-# =============================================================================
-def run_tests() -> None:
-# Function to run internal tests, checking critical features.
-    """
-    Run simple test cases to validate the core functions.
-
-    The tests include:
-      1. Creating a temporary settings JSON file and testing load_settings().
-      2. Verifying that gps_device_exists() returns True for a known file (e.g., '/dev/null').
-    """
-    logging.info("Running tests...")
-
-    # Create a temporary settings file with sample data.
-    test_settings = {"udp_ip": "127.0.0.1", "udp_port": 5000}
-    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp:
-        json.dump(test_settings, tmp)
-        tmp_path = tmp.name
-    logging.debug(f"Temporary settings file created at {tmp_path}")
-
-    # Test load_settings() function.
-    loaded_settings = load_settings(tmp_path)
-    if loaded_settings == test_settings:
-        logging.info("load_settings() test passed.")
-    else:
-        logging.error("load_settings() test failed.")
-
-    # Clean up the temporary settings file.
-    try:
-        Path(tmp_path).unlink()
-        logging.debug("Temporary settings file deleted.")
-    except Exception as e:
-        logging.error(f"Failed to delete temporary settings file: {e}", exc_info=True)
-
-    # Test gps_device_exists() using '/dev/null' (commonly exists on Unix-like systems).
-    gps_device_manager = GPSDeviceManager("/dev/null")
-    if gps_device_manager.exists():
-        logging.info("gps_device_exists() test passed for '/dev/null'.")
-    else:
-        logging.error("gps_device_exists() test failed for '/dev/null'.")
-
-    logging.info("Tests completed.")
-
-# =============================================================================
-# MAIN FUNCTION
-# =============================================================================
-def main() -> None:
-# The primary function of the script, running the overall setup.
-    """
-    Main entry point for the script.
-
-    Steps:
-      1. Parse command-line arguments.
-      2. Configure logging.
-      3. If test mode is enabled, run tests and exit.
-      4. Otherwise, initialize GPSSetup and run the GPS device setup process.
-      5. Handle any unexpected errors gracefully.
-    """
-    args = parse_arguments()
-
-    # Define purple color code and reset code.
-    PURPLE = "\x1b[35m"
-    RESET = "\x1b[0m"
-
-    # Configure logging with a purple [GPS] prefix.
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format=f"{PURPLE}[GPS]{RESET} %(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    logging.debug("Parsed arguments: %s", args)
-
-    # If the '--test' flag is set, run tests and exit.
-    if args.test:
-        run_tests()
-        return
-
-    try:
-        # Initialize GPSSetup with command-line arguments.
-        setup = GPSSetup(
-            settings_file=args.settings,
-            device=args.device,
-            socat_attempts=args.socat_attempts,
-            flow_attempts=args.flow_attempts
-        )
-        # Execute the GPS device setup process.
-        setup.run()
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
+        print(f"Unexpected error: {e}")
         sys.exit(1)
 
-# =============================================================================
-# EXECUTION START POINT
-# =============================================================================
+settings = load_settings()
+gps_settings = settings["GPS_SETTINGS"]
+logging_settings = settings["LOGGING_SETTINGS"]
+
+gps_log_path = os.path.expanduser(gps_settings["gps_log_path"])
+log_file_path = os.path.expanduser(logging_settings["log_file_path"])
+requests_directory = os.path.expanduser(gps_settings["requests_dir"])
+
+os.makedirs(requests_directory, exist_ok=True)
+if os.path.exists(log_file_path):
+    open(log_file_path, "w").close()
+
+logger.remove()
+if logging_settings.get("log_to_file", True):
+    logger.add(log_file_path, level=logging_settings["log_level"].upper())
+if logging_settings.get("log_to_terminal", True):
+    logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True,
+               format="<yellow>{time:DD/MM @ HH:mm:ss}</yellow><red>| GPS |</red><level>{level:^7}</level> <red>|</red> <cyan>{message}</cyan>")
+logger.success("Logger initialized.")
+
+UDP_IP = gps_settings["udp_ip"]
+UDP_PORT = gps_settings["udp_port"]
+BUFFER_SIZE = gps_settings["buffer_size"]
+SOCKET_TIMEOUT = gps_settings["socket_timeout_sec"]
+
+udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    udp_socket.bind((UDP_IP, UDP_PORT))
+    udp_socket.settimeout(SOCKET_TIMEOUT)
+    logger.success(f"UDP socket bound to {UDP_IP}:{UDP_PORT}")
+except Exception as e:
+    logger.critical(f"Socket binding failed: {e}")
+    sys.exit(1)
+
+active_devices = {}
+buffer_full_counts = {}
+
+def create_virtual_device(device_name):
+    master_fd, slave_fd = pty.openpty()
+    device_path = os.ttyname(slave_fd)
+    symlink_path = f"/dev/tty{device_name}"
+    try:
+        subprocess.run(["sudo", "ln", "-sf", device_path, symlink_path], check=True)
+        logger.success(f"Created virtual device: {symlink_path} -> {device_path}")
+    except subprocess.CalledProcessError as e:
+        logger.critical(f"Failed to create symlink for {device_name}: {e}")
+        return None
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    buffer_full_counts[device_name] = 0
+    return master_fd
+
+def cleanup_virtual_device(device_name, fd):
+    symlink_path = f"/dev/tty{device_name}"
+    request_file_path = os.path.join(requests_directory, device_name)
+    try:
+        subprocess.run(["sudo", "rm", "-f", symlink_path], check=True)
+        logger.info(f"Virtual device {symlink_path} removed.")
+    except subprocess.CalledProcessError as e:
+        logger.critical(f"Virtual device {symlink_path} removal failed: {e}")
+    if os.path.exists(request_file_path):
+        try:
+            os.remove(request_file_path)
+            logger.info(f"Removed stale request file {request_file_path}")
+        except Exception as e:
+            logger.error(f"Error removing {request_file_path}: {e}")
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    buffer_full_counts.pop(device_name, None)
+
+def validate_checksum(sentence):
+    try:
+        sentence_body, checksum_str = sentence.strip().split('*')
+        sentence_body = sentence_body.lstrip('$')
+        calculated_checksum = 0
+        for char in sentence_body:
+            calculated_checksum ^= ord(char)
+        return int(checksum_str, 16) == calculated_checksum
+    except Exception as e:
+        logger.error(f"Checksum error: {e}")
+        return False
+
+def convert_to_decimal(degree_min_str, direction):
+    try:
+        if direction in ['N', 'S']:
+            degrees = int(degree_min_str[:2])
+            minutes = float(degree_min_str[2:])
+        else:
+            degrees = int(degree_min_str[:3])
+            minutes = float(degree_min_str[3:])
+        decimal_value = degrees + minutes / 60.0
+        return -decimal_value if direction in ['S', 'W'] else decimal_value
+    except Exception as e:
+        logger.error(f"Conversion error for {degree_min_str} {direction}: {e}")
+        return None
+
+def parse_gga(sentence):
+    try:
+        fields = sentence.split(',')
+        if len(fields) < 10:
+            return None
+        latitude = convert_to_decimal(fields[2], fields[3]) if fields[2] and fields[3] else None
+        longitude = convert_to_decimal(fields[4], fields[5]) if fields[4] and fields[5] else None
+        satellites = int(fields[7]) if fields[7] else None
+        altitude = float(fields[9]) if fields[9] else None
+        return {"latitude": latitude, "longitude": longitude, "altitude": altitude, "satellites": satellites}
+    except Exception as e:
+        logger.error(f"GGA parse error: {e}")
+        return None
+
+def parse_rmc(sentence):
+    try:
+        fields = sentence.split(',')
+        if len(fields) < 8:
+            return None
+        speed_knots = float(fields[7]) if fields[7] else None
+        return {"speed": speed_knots * 1.852 if speed_knots is not None else None}
+    except Exception as e:
+        logger.error(f"RMC parse error: {e}")
+        return None
+
+def monitor_requests():
+    current_requests = set(f for f in os.listdir(requests_directory)
+                           if f.startswith("GPS_") and not f.endswith((".log", ".zip")))
+    for request_file in current_requests:
+        if request_file not in active_devices:
+            device_fd = create_virtual_device(request_file)
+            if device_fd is not None:
+                active_devices[request_file] = device_fd
+    for device_name in list(active_devices.keys()):
+        if device_name not in current_requests:
+            logger.warning(f"Virtual device {device_name} disconnected, cleaning up.")
+            cleanup_virtual_device(device_name, active_devices[device_name])
+            active_devices.pop(device_name, None)
+
+def main_loop():
+    last_check_time = time.time()
+    last_stats_time = time.time()
+    last_valid_time = time.time()
+    last_fix_log_time = time.time()
+    last_summary_time = time.time()
+    valid_update_count = 0
+    stats_update_count = 0
+    window_valid_updates = 0
+    window_speed_sum = 0.0
+    window_speed_count = 0
+    error_logged = False
+    connection_lost = False
+    gps_fix = {"latitude": None, "longitude": None, "altitude": None, "satellites": None, "speed": None}
+    while True:
+        try:
+            current_time = time.time()
+            if current_time - last_check_time > 2:
+                monitor_requests()
+                last_check_time = current_time
+            data, addr = udp_socket.recvfrom(BUFFER_SIZE)
+            raw_data = data.decode(errors="ignore").strip()
+            for sentence in [line.strip() for line in raw_data.splitlines() if line.strip()]:
+                if not sentence.startswith('$'):
+                    logger.warning(f"Ignored malformed sentence: {sentence}")
+                    continue
+                if validate_checksum(sentence):
+                    last_valid_time = time.time()
+                    if connection_lost:
+                        logger.success("GPS Reconnected.")
+                        connection_lost = False
+                    error_logged = False
+                    if sentence.startswith('$GPGGA'):
+                        gga_data = parse_gga(sentence)
+                        if gga_data:
+                            gps_fix.update(gga_data)
+                    elif sentence.startswith('$GPRMC'):
+                        rmc_data = parse_rmc(sentence)
+                        if rmc_data:
+                            gps_fix["speed"] = rmc_data.get("speed")
+                            if rmc_data.get("speed") is not None:
+                                window_speed_sum += rmc_data.get("speed")
+                                window_speed_count += 1
+                    for device_name, device_fd in list(active_devices.items()):
+                        try:
+                            if buffer_full_counts.get(device_name, 0) > 0:
+                                logger.warning(f"Buffer full on /dev/tty{device_name}, skipping write ({buffer_full_counts[device_name]}/10).")
+                            os.write(device_fd, (sentence + "\n").encode())
+                            buffer_full_counts[device_name] = 0
+                        except BlockingIOError:
+                            logger.warning(f"Buffer full on /dev/tty{device_name}, skipping write ({buffer_full_counts[device_name]}/10).")
+                            buffer_full_counts[device_name] += 1
+                            if buffer_full_counts[device_name] > 10:
+                                logger.critical(f"Device /dev/tty{device_name} unresponsive. Cleaning up.")
+                                cleanup_virtual_device(device_name, device_fd)
+                                active_devices.pop(device_name, None)
+                        except OSError as e:
+                            logger.error(f"Write error on /dev/tty{device_name}: {e}")
+                    if gps_settings["log_gps_data"]:
+                        with open(gps_log_path, "a") as gps_log_file:
+                            gps_log_file.write(sentence + "\n")
+                    valid_update_count += 1
+                    stats_update_count += 1
+                    window_valid_updates += 1
+                    if time.time() - last_stats_time >= 5:
+                        updates_per_sec = stats_update_count / (time.time() - last_stats_time)
+                        logger.info(f"GPS updates per second: {updates_per_sec:.2f}")
+                        stats_update_count = 0
+                        last_stats_time = time.time()
+                    if (current_time - last_valid_time < 30) and (current_time - last_fix_log_time >= 5):
+                        latitude = f"{gps_fix['latitude']:.3f}" if gps_fix['latitude'] is not None else "N/A"
+                        longitude = f"{gps_fix['longitude']:.3f}" if gps_fix['longitude'] is not None else "N/A"
+                        altitude = f"{gps_fix['altitude']:.3f}" if gps_fix['altitude'] is not None else "N/A"
+                        satellites = gps_fix['satellites'] if gps_fix['satellites'] is not None else "N/A"
+                        speed = f"{gps_fix['speed']:.3f}" if gps_fix['speed'] is not None else "N/A"
+                        logger.info(f"Latitude: {latitude}")
+                        logger.info(f"Longitude: {longitude}")
+                        logger.info(f"Altitude: {altitude} m")
+                        logger.info(f"Satellites: {satellites}")
+                        logger.info(f"Speed: {speed} km/h")
+                        last_fix_log_time = current_time
+                else:
+                    logger.warning(f"Invalid checksum: {sentence}")
+            logger.trace(" | ".join([
+                f"Latitude: {gps_fix['latitude']:.3f}" if gps_fix['latitude'] is not None else "Latitude: N/A",
+                f"Longitude: {gps_fix['longitude']:.3f}" if gps_fix['longitude'] is not None else "Longitude: N/A",
+                f"Altitude: {gps_fix['altitude']:.3f} m" if gps_fix['altitude'] is not None else "Altitude: N/A",
+                f"Satellites: {gps_fix['satellites']}" if gps_fix['satellites'] is not None else "Satellites: N/A",
+                f"Speed: {gps_fix['speed']:.3f} km/h" if gps_fix['speed'] is not None else "Speed: N/A"
+            ]))
+        except socket.timeout:
+            current_time = time.time()
+            if current_time - last_valid_time >= 30:
+                if not error_logged:
+                    logger.error("No GPS connection for more than 30 seconds.")
+                    error_logged = True
+                    connection_lost = True
+            else:
+                logger.warning("GPS connection lost: Check your GPS Device.")
+            continue
+        except KeyboardInterrupt:
+            logger.success("Terminated by user.")
+            sys.exit(0)
+        except Exception as e:
+            logger.critical(f"Unexpected error: {e}")
+            sys.exit(1)
+        if time.time() - last_summary_time >= 30:
+            average_speed = window_speed_sum / window_speed_count if window_speed_count > 0 else 0.0
+            logger.success(f"30-second summary: {window_valid_updates} valid updates, average speed: {average_speed:.2f} km/h")
+            window_valid_updates = 0
+            window_speed_sum = 0.0
+            window_speed_count = 0
+            last_summary_time = time.time()
+
 if __name__ == "__main__":
-# Ensures this script runs the 'main' function when executed directly.
-    main()
+    logger.success("GPS Logger started.")
+    main_loop()
