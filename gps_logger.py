@@ -198,9 +198,10 @@ def main_loop():
     last_check_time = time.time()
     last_valid_time = time.time()
     stable_start_time = None
-    error_logged = False
     connection_lost = False
     summary_logged = False
+    lost_logged = False
+    stable_logged = False
     gps_fix = {"latitude": None, "longitude": None, "altitude": None, "satellites": None, "speed": None}
     while True:
         try:
@@ -223,7 +224,6 @@ def main_loop():
                         summary_logged = False
                     elif stable_start_time is None:
                         stable_start_time = current_time
-                    error_logged = False
                     if sentence.startswith('$GPGGA'):
                         gga_data = parse_gga(sentence)
                         if gga_data:
@@ -255,7 +255,10 @@ def main_loop():
         except socket.timeout:
             current_time = time.time()
             if current_time - last_valid_time >= 30:
-                logger.error("CONNECTION LOST, TRYING TO RECONNECT.")
+                if not lost_logged:
+                    logger.error("CONNECTION LOST, TRYING TO RECONNECT.")
+                    lost_logged = True
+                    stable_logged = False
                 try:
                     udp_socket.close()
                 except Exception:
@@ -291,8 +294,11 @@ def main_loop():
             logger.critical(f"SOMETHING HAPPENED: {e}")
             sys.exit(1)
         if (not connection_lost) and (stable_start_time is not None) and (time.time() - stable_start_time >= 5) and (not summary_logged):
-            logger.success("CONNECTION STABLE.")
-            summary_logged = True
+            if not stable_logged:
+                logger.success("CONNECTION STABLE.")
+                stable_logged = True
+                lost_logged = False
+                summary_logged = True
 
 if __name__ == "__main__":
     logger.info("GPS LOG STARTED.")
