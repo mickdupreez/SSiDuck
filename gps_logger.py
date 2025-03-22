@@ -54,24 +54,18 @@ requests_directory = os.path.expanduser(gps_settings["requests_dir"])
 
 os.makedirs(requests_directory, exist_ok=True)
 
-if os.path.exists(log_file_path):
-    open(log_file_path, "w").close()
-if os.path.exists(gps_log_path):
-    open(gps_log_path, "w").close()
-
 logger.remove()
-
 if logging_settings.get("log_to_file", True):
     logger.add(log_file_path, level=logging_settings["log_level"].upper())
 if logging_settings.get("log_to_terminal", True):
-    logger.add(
-        sys.stderr,
-        level=logging_settings["log_level"].upper(),
-        colorize=True,
-        format="<yellow>{time:DD/MM @ HH:mm:ss.SSS}</yellow><red>| GPS |</red><level>{level:^7}</level><red>|</red> <cyan>{message}</cyan>"
-    )
-
-logger.success("Logger initialized.")
+    logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format="<yellow>{time:DD/MM @ HH:mm:ss.SSS}</yellow><red>| GPS |</red><level>{level:^7}</level><red>|</red> <cyan>{message}</cyan>")
+if os.path.exists(log_file_path):
+    open(log_file_path, "w").close()
+    logger.success(f"GPS LOGGER: CLEARED {os.path.basename(log_file_path)}")
+if os.path.exists(gps_log_path):
+    open(gps_log_path, "w").close()
+    logger.success(f"GPS LOGGER: CLEARED {os.path.basename(gps_log_path)}")
+logger.success("GPS LOGGER: STARTING GPS LOG.")
 
 UDP_IP = gps_settings["udp_ip"]
 UDP_PORT = gps_settings["udp_port"]
@@ -81,19 +75,20 @@ SOCKET_TIMEOUT = gps_settings["socket_timeout_sec"]
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 attempt_interval = 1
 attempt_count = 0
-
+warning_logged = False
 while True:
     try:
         udp_socket.bind((UDP_IP, UDP_PORT))
         udp_socket.settimeout(SOCKET_TIMEOUT)
-        logger.success(f"UDP socket bound to {UDP_IP}:{UDP_PORT}")
+        logger.success("GPS DEVICE: CONNECTED SUCCESSFULLY.")
         break
     except Exception:
         attempt_count += 1
-        if attempt_count <= 30:
-            logger.warning("!NETWORK DOWN! Trying to reconnect")
-        elif attempt_count == 31:
-            logger.error("Network down. Too many attempts to reconnect. Will keep retrying silently until we succeed.")
+        if not warning_logged:
+            logger.warning("GPS DEVICE: LOOKING FOR GPS DEVICE.")
+            warning_logged = True
+        if attempt_count == 31:
+            logger.error("GPS DEVICE: NO GPS DEVICE FOUND.")
         time.sleep(attempt_interval)
 
 active_devices = {}
@@ -119,13 +114,13 @@ def cleanup_virtual_device(device_name, fd):
     request_file_path = os.path.join(requests_directory, device_name)
     try:
         subprocess.run(["sudo", "rm", "-f", symlink_path], check=True)
-        logger.info(f"Virtual device {symlink_path} removed.")
+        logger.success(f"Virtual device {symlink_path} removed.")
     except subprocess.CalledProcessError as e:
         logger.critical(f"Virtual device {symlink_path} removal failed: {e}")
     if os.path.exists(request_file_path):
         try:
             os.remove(request_file_path)
-            logger.info(f"Removed stale request file {request_file_path}")
+            logger.success(f"Removed stale request file {request_file_path}")
         except Exception as e:
             logger.error(f"Error removing {request_file_path}: {e}")
     try:
@@ -169,12 +164,7 @@ def parse_gga(sentence):
         longitude = convert_to_decimal(fields[4], fields[5]) if fields[4] and fields[5] else None
         satellites = int(fields[7]) if fields[7] else None
         altitude = float(fields[9]) if fields[9] else None
-        return {
-            "latitude": latitude,
-            "longitude": longitude,
-            "altitude": altitude,
-            "satellites": satellites
-        }
+        return {"latitude": latitude, "longitude": longitude, "altitude": altitude, "satellites": satellites}
     except Exception as e:
         logger.error(f"GGA parse error: {e}")
         return None
@@ -191,10 +181,7 @@ def parse_rmc(sentence):
         return None
 
 def monitor_requests():
-    current_requests = set(
-        f for f in os.listdir(requests_directory)
-        if f.startswith("GPS_") and not f.endswith((".log", ".zip"))
-    )
+    current_requests = set(f for f in os.listdir(requests_directory) if f.startswith("GPS_") and not f.endswith((".log", ".zip")))
     for request_file in current_requests:
         if request_file not in active_devices:
             device_fd = create_virtual_device(request_file)
@@ -207,23 +194,14 @@ def monitor_requests():
             active_devices.pop(device_name, None)
 
 def main_loop():
+    global udp_socket
     last_check_time = time.time()
-    last_stats_time = time.time()
     last_valid_time = time.time()
-    last_fix_log_time = time.time()
     stable_start_time = None
-    valid_update_count = 0
-    stats_update_count = 0
     error_logged = False
     connection_lost = False
     summary_logged = False
-    gps_fix = {
-        "latitude": None,
-        "longitude": None,
-        "altitude": None,
-        "satellites": None,
-        "speed": None
-    }
+    gps_fix = {"latitude": None, "longitude": None, "altitude": None, "satellites": None, "speed": None}
     while True:
         try:
             current_time = time.time()
@@ -239,7 +217,7 @@ def main_loop():
                 if validate_checksum(sentence):
                     last_valid_time = current_time
                     if connection_lost:
-                        logger.success("GPS is UP.")
+                        logger.success("GPS CONNECTION: STABALIZING.")
                         connection_lost = False
                         stable_start_time = current_time
                         summary_logged = False
@@ -272,26 +250,39 @@ def main_loop():
                     if gps_settings["log_gps_data"]:
                         with open(gps_log_path, "a") as gps_log_file:
                             gps_log_file.write(sentence + "\n")
-                    valid_update_count += 1
-                    stats_update_count += 1
                 else:
                     logger.warning(f"Invalid checksum: {sentence}")
         except socket.timeout:
             current_time = time.time()
             if current_time - last_valid_time >= 30:
-                if not error_logged:
-                    logger.error("No GPS connection for more than 30 seconds.")
-                    error_logged = True
-                    connection_lost = True
-                    stable_start_time = None
-                    summary_logged = False
+                logger.error("GPS DEVICE: CONNECTION LOST, TRYING TO RECONNECT.")
+                try:
+                    udp_socket.close()
+                except Exception:
+                    pass
+                udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                attempt_count = 0
+                warning_logged = False
+                while True:
+                    try:
+                        udp_socket.bind((UDP_IP, UDP_PORT))
+                        udp_socket.settimeout(SOCKET_TIMEOUT)
+                        logger.success("GPS DEVICE: CONNECTED SUCCESSFULLY.")
+                        break
+                    except Exception:
+                        attempt_count += 1
+                        if not warning_logged:
+                            logger.warning("GPS DEVICE: LOOKING FOR GPS DEVICE.")
+                            warning_logged = True
+                        if attempt_count == 31:
+                            logger.error("GPS DEVICE: NO GPS DEVICE FOUND.")
+                        time.sleep(attempt_interval)
+                return
             else:
                 if not connection_lost:
-                    logger.warning("GPS is DOWN.")
+                    logger.warning("GPS DEVICE: CONNECTION UNSTABLE.")
                     connection_lost = True
-                    stable_start_time = None
-                    summary_logged = False
-            continue
+                continue
         except KeyboardInterrupt:
             logger.success("Terminated by user.")
             sys.exit(0)
@@ -299,9 +290,10 @@ def main_loop():
             logger.critical(f"Unexpected error: {e}")
             sys.exit(1)
         if (not connection_lost) and (stable_start_time is not None) and (time.time() - stable_start_time >= 10) and (not summary_logged):
-            logger.success("GPS is STABLE")
+            logger.success("GPS DEVICE: CONNECTION STABLE.")
             summary_logged = True
 
 if __name__ == "__main__":
-    logger.success("GPS Logger started.")
-    main_loop()
+    while True:
+        logger.success("GPS LOGGER: GPS LOG STARTED.")
+        main_loop()
