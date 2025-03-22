@@ -267,7 +267,6 @@ def main_loop():
                     try:
                         udp_socket.bind((UDP_IP, UDP_PORT))
                         udp_socket.settimeout(SOCKET_TIMEOUT)
-                        logger.success("GPS DEVICE: CONNECTED SUCCESSFULLY.")
                         break
                     except Exception:
                         attempt_count += 1
@@ -294,6 +293,6 @@ def main_loop():
             summary_logged = True
 
 if __name__ == "__main__":
+    logger.success("GPS LOGGER: GPS LOG STARTED.")
     while True:
-        logger.success("GPS LOGGER: GPS LOG STARTED.")
         main_loop()
