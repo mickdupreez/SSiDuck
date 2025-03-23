@@ -35,7 +35,6 @@ IGNORE_PATTERNS = [
     "specify baud=",
     "check your gps documentation"
 ]
-CLEANUP_EXTENSIONS = [".kismet", ".kismet-journal", ".wiglecsv"]
 
 gps_device_name = kismet_settings["gps_device_name"]
 request_file_path = os.path.expanduser(f"~/.local/bin/wardriver/logs/gps_logs/gps_devices/{gps_device_name}")
@@ -46,29 +45,25 @@ logger_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <magenta>KISMET
 logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format=logger_format)
 logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time} | KISMET | {level} | {message}")
 
+kismet_process = None
+
 def cleanup_old_logs():
-    cleared_count = 0
-    for ext in CLEANUP_EXTENSIONS:
-        for file in glob.glob(os.path.join(log_dir, f"*{ext}")):
-            try:
-                open(file, 'w').close()
-                cleared_count += 1
-            except Exception:
-                pass
-    if cleared_count > 0:
-        logger.info(f"Cleared {cleared_count} old Kismet log files")
-    else:
-        logger.info("No old Kismet log files found to clear")
+    for filename in ["wardrive.kismet", "wardrive.wiglecsv"]:
+        file_path = os.path.join(log_dir, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 def kill_existing_kismet():
     current_pid = os.getpid()
-    retry_attempts = KILL_RETRY_ATTEMPTS
-    wait_seconds = KILL_RETRY_WAIT_SECONDS
-    for _ in range(retry_attempts):
+    for _ in range(KILL_RETRY_ATTEMPTS):
         found_processes = False
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
-                if 'kismet' in (proc.info['name'] or '').lower() or any('kismet' in (arg.lower()) for arg in proc.info['cmdline'] or []):
+                proc_name = (proc.info['name'] or '').lower()
+                proc_cmd = [arg.lower() for arg in (proc.info['cmdline'] or [])]
+                if 'tail' in proc_name or any('tail' in arg for arg in proc_cmd):
+                    continue
+                if 'kismet' in proc_name or any('kismet' in arg for arg in proc_cmd):
                     if SKIP_KILL_SELF and proc.pid == current_pid:
                         continue
                     found_processes = True
@@ -76,9 +71,14 @@ def kill_existing_kismet():
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         if found_processes:
-            time.sleep(wait_seconds)
+            time.sleep(KILL_RETRY_WAIT_SECONDS)
         else:
             break
+
+def wait_for_gps_device():
+    device_path = f"/dev/tty{gps_device_name}"
+    while not os.path.exists(device_path):
+        time.sleep(1)
 
 def update_kismet_conf(gps_device_name):
     kismet_conf_path = "/etc/kismet/kismet.conf"
@@ -102,17 +102,19 @@ def update_kismet_conf(gps_device_name):
     subprocess.run(["sudo", "mv", temp_conf_path, kismet_conf_path], check=True)
 
 def start_kismet():
+    global kismet_process
     kill_existing_kismet()
     cleanup_old_logs()
     os.makedirs(log_dir, exist_ok=True)
     open(request_file_path, 'a').close()
+    wait_for_gps_device()
     update_kismet_conf(gps_device_name)
     kismet_args = kismet_launch_args.split()
     cmd = (["sudo"] if run_as_sudo else []) + ["kismet"] + kismet_args + ["--log-prefix", log_dir]
     with open(kismet_log_path, "w") as kismet_log_file:
-        process = subprocess.Popen(cmd, stdout=kismet_log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid)
+        kismet_process = subprocess.Popen(cmd, stdout=kismet_log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid)
     logger.success(f"Kismet started, output to {kismet_log_path}")
-    return process
+    return kismet_process
 
 def follow_kismet_log(process):
     restart_attempts = 0
@@ -143,6 +145,12 @@ def cleanup():
         logger.info("Cleaned up request file.")
 
 def handle_exit(sig, frame):
+    global kismet_process
+    if kismet_process is not None:
+        try:
+            os.killpg(kismet_process.pid, signal.SIGINT)
+        except Exception:
+            pass
     cleanup()
     logger.info("Watchdog exiting.")
     sys.exit(0)
