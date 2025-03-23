@@ -13,18 +13,10 @@ def load_settings(file_path="gps_settings.json"):
     default_settings = {
         "GPS_SETTINGS": {
             "udp_ip": "172.20.10.3",
-            "udp_port": 11123,
-            "buffer_size": 4096,
-            "socket_timeout_sec": 1,
-            "log_gps_data": True,
-            "gps_log_path": "~/.local/bin/wardriver/logs/gps_data.log",
-            "requests_dir": "~/.local/bin/wardriver/logs/"
+            "udp_port": 11123
         },
         "LOGGING_SETTINGS": {
-            "log_to_file": True,
-            "log_to_terminal": True,
-            "log_file_path": "~/.local/bin/wardriver/logs/gps_monitor.log",
-            "log_level": "TRACE"
+            "log_level": "trace"
         }
     }
     try:
@@ -48,12 +40,27 @@ settings = load_settings()
 gps_settings = settings["GPS_SETTINGS"]
 logging_settings = settings["LOGGING_SETTINGS"]
 
+hardcoded_gps = {
+    "buffer_size": 4096,
+    "socket_timeout_sec": 1,
+    "log_gps_data": True,
+    "gps_log_path": "~/.local/bin/wardriver/logs/gps_data.log",
+    "requests_dir": "~/.local/bin/wardriver/logs/"
+}
+hardcoded_logging = {
+    "log_to_file": True,
+    "log_to_terminal": True,
+    "log_file_path": "~/.local/bin/wardriver/logs/gps_monitor.log"
+}
+for k, v in hardcoded_gps.items():
+    gps_settings[k] = v
+for k, v in hardcoded_logging.items():
+    logging_settings[k] = v
+
 gps_log_path = os.path.expanduser(gps_settings["gps_log_path"])
 log_file_path = os.path.expanduser(logging_settings["log_file_path"])
 requests_directory = os.path.expanduser(gps_settings["requests_dir"])
-
 os.makedirs(requests_directory, exist_ok=True)
-
 logger.remove()
 if logging_settings.get("log_to_file", True):
     logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time:DD/MM @ HH:mm:ss.SSS}| GPS | {level:^7} | {message}")
@@ -66,12 +73,10 @@ if os.path.exists(gps_log_path):
     open(gps_log_path, "w").close()
     logger.info(f"CLEARED {os.path.basename(gps_log_path)}")
 logger.info("STARTING GPS LOG.")
-
 UDP_IP = gps_settings["udp_ip"]
 UDP_PORT = gps_settings["udp_port"]
 BUFFER_SIZE = gps_settings["buffer_size"]
 SOCKET_TIMEOUT = gps_settings["socket_timeout_sec"]
-
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 attempt_interval = 1
 attempt_count = 0
@@ -90,11 +95,9 @@ while True:
         if attempt_count == 31:
             logger.error("NO GPS DEVICE CONNECTED.")
         time.sleep(attempt_interval)
-
 active_devices = {}
 buffer_full_counts = {}
 connection_error_logged = False
-
 def create_virtual_device(device_name):
     try:
         master_fd, slave_fd = pty.openpty()
@@ -109,7 +112,6 @@ def create_virtual_device(device_name):
     except subprocess.CalledProcessError as e:
         logger.error(f"VIRTUAL DEVICE {device_name} CREATION FAILED: {e}")
         return None
-
 def cleanup_virtual_device(device_name, fd):
     symlink_path = f"/dev/tty{device_name}"
     request_file_path = os.path.join(requests_directory, device_name)
@@ -129,7 +131,6 @@ def cleanup_virtual_device(device_name, fd):
     except Exception:
         pass
     buffer_full_counts.pop(device_name, None)
-
 def validate_checksum(sentence):
     try:
         sentence_body, checksum_str = sentence.strip().split('*')
@@ -141,7 +142,6 @@ def validate_checksum(sentence):
     except Exception as e:
         logger.error(f"FILE ERROR {e}")
         return False
-
 def convert_to_decimal(degree_min_str, direction):
     try:
         if direction in ['N', 'S']:
@@ -155,7 +155,6 @@ def convert_to_decimal(degree_min_str, direction):
     except Exception as e:
         logger.error(f"DATA MANIPULATION ERROR: {degree_min_str} {direction}: {e}")
         return None
-
 def parse_gga(sentence):
     try:
         fields = sentence.split(',')
@@ -169,7 +168,6 @@ def parse_gga(sentence):
     except Exception as e:
         logger.error(f"GGA PARSE ERROR: {e}")
         return None
-
 def parse_rmc(sentence):
     try:
         fields = sentence.split(',')
@@ -180,7 +178,6 @@ def parse_rmc(sentence):
     except Exception as e:
         logger.error(f"RMC PARSE ERROR: {e}")
         return None
-
 def monitor_requests():
     current_requests = set(f for f in os.listdir(requests_directory) if f.startswith("GPS_") and not f.endswith((".log", ".zip")))
     for request_file in current_requests:
@@ -193,7 +190,6 @@ def monitor_requests():
             logger.info(f"DISCONNECTING VIRTUAL DEVICE {device_name}")
             cleanup_virtual_device(device_name, active_devices[device_name])
             active_devices.pop(device_name, None)
-
 def main_loop():
     global udp_socket, connection_error_logged
     last_check_time = time.time()
@@ -297,7 +293,6 @@ def main_loop():
                 stable_logged = True
                 summary_logged = True
                 connection_error_logged = False
-
 if __name__ == "__main__":
     logger.warning("WAITING FOR GPS DEVICE.")
     while True:
