@@ -299,6 +299,6 @@ def main_loop():
                 connection_error_logged = False
 
 if __name__ == "__main__":
-    logger.info("GPS LOGGING HAS BEGUN.")
+    logger.warning("WAITING FOR GPS DEVICE.")
     while True:
         main_loop()
