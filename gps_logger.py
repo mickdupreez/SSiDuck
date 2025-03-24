@@ -98,6 +98,8 @@ while True:
 active_devices = {}
 buffer_full_counts = {}
 connection_error_logged = False
+global_gps_warning_time = None
+global_gps_error_logged = False
 def create_virtual_device(device_name):
     try:
         master_fd, slave_fd = pty.openpty()
@@ -191,13 +193,12 @@ def monitor_requests():
             cleanup_virtual_device(device_name, active_devices[device_name])
             active_devices.pop(device_name, None)
 def main_loop():
-    global udp_socket, connection_error_logged, UDP_IP
+    global udp_socket, connection_error_logged, UDP_IP, global_gps_warning_time, global_gps_error_logged
     last_check_time = time.time()
     last_valid_time = time.time()
     stable_start_time = None
     connection_lost = False
     summary_logged = False
-    stable_logged = False
     gps_fix = {"latitude": None, "longitude": None, "altitude": None, "satellites": None, "speed": None}
     while True:
         try:
@@ -213,6 +214,8 @@ def main_loop():
                     continue
                 if validate_checksum(sentence):
                     last_valid_time = current_time
+                    global_gps_warning_time = None
+                    global_gps_error_logged = False
                     if connection_lost:
                         logger.info("GPS DATA IS FLOWING.")
                         connection_lost = False
@@ -250,10 +253,14 @@ def main_loop():
                     logger.warning(f"SOMETHING DOESN'T LOOK RIGHT {sentence}")
         except socket.timeout:
             current_time = time.time()
-            if current_time - last_valid_time >= 30:
-                if not connection_error_logged:
-                    logger.error("GPS DATA FLOW STOPPED, RESTARTING GPS.")
-                    connection_error_logged = True
+            if current_time - last_valid_time >= 10:
+                if global_gps_warning_time is None:
+                    global_gps_warning_time = current_time
+                    logger.warning("GPS DATA FLOW STOPPED.")
+                elif current_time - global_gps_warning_time >= 30:
+                    if not global_gps_error_logged:
+                        logger.error("CHECK GPS IS CONNECTED")
+                        global_gps_error_logged = True
                 try:
                     udp_socket.close()
                 except Exception:
@@ -269,8 +276,9 @@ def main_loop():
                         break
                     except OSError as e:
                         if e.errno == 99 and UDP_IP != "0.0.0.0":
-                            logger.error(f"Cannot assign requested address for {UDP_IP}. Falling back to 0.0.0.0")
+                            logger.error(f"CANT FIND UDP CONNECTION: {UDP_IP}")
                             UDP_IP = "0.0.0.0"
+                            connection_error_logged = False
                             continue
                         attempt_count += 1
                         if not warning_logged:
@@ -292,9 +300,8 @@ def main_loop():
             logger.critical(f"SOMETHING HAPPENED: {e}")
             sys.exit(1)
         if (not connection_lost) and (stable_start_time is not None) and (time.time() - stable_start_time >= 5) and (not summary_logged):
-            if not stable_logged:
+            if not summary_logged:
                 logger.success("CONNECTION STABLE.")
-                stable_logged = True
                 summary_logged = True
                 connection_error_logged = False
 if __name__ == "__main__":
