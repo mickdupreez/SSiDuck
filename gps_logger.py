@@ -8,7 +8,6 @@ import subprocess
 import fcntl
 import time
 from loguru import logger
-
 def load_settings(file_path="gps_settings.json"):
     default_settings = {
         "GPS_SETTINGS": {
@@ -35,28 +34,25 @@ def load_settings(file_path="gps_settings.json"):
     except Exception as e:
         print(f"Unexpected error: {e}")
         sys.exit(1)
-
 settings = load_settings()
 gps_settings = settings["GPS_SETTINGS"]
 logging_settings = settings["LOGGING_SETTINGS"]
-
 hardcoded_gps = {
     "buffer_size": 4096,
     "socket_timeout_sec": 1,
     "log_gps_data": True,
-    "gps_log_path": "~/.local/bin/wardriver/logs/gps_data.log",
-    "requests_dir": "~/.local/bin/wardriver/logs/"
+    "gps_log_path": os.path.join(os.getcwd(), "logs", "gps_logs", "gps_data.log"),
+    "requests_dir": os.path.join(os.getcwd(), "logs", "gps_logs", "gps_devices")
 }
 hardcoded_logging = {
     "log_to_file": True,
     "log_to_terminal": True,
-    "log_file_path": "~/.local/bin/wardriver/logs/gps_monitor.log"
+    "log_file_path": os.path.join(os.getcwd(), "logs", "gps_logs", "gps_monitor.log")
 }
 for k, v in hardcoded_gps.items():
     gps_settings[k] = v
 for k, v in hardcoded_logging.items():
     logging_settings[k] = v
-
 gps_log_path = os.path.expanduser(gps_settings["gps_log_path"])
 log_file_path = os.path.expanduser(logging_settings["log_file_path"])
 requests_directory = os.path.expanduser(gps_settings["requests_dir"])
@@ -87,7 +83,11 @@ while True:
         udp_socket.settimeout(SOCKET_TIMEOUT)
         logger.info("GPS CONNECTED SUCCESSFULLY.")
         break
-    except Exception:
+    except OSError as e:
+        if e.errno == 99 and UDP_IP != "0.0.0.0":
+            logger.error(f"Cannot assign requested address for {UDP_IP}. Falling back to 0.0.0.0")
+            UDP_IP = "0.0.0.0"
+            continue
         attempt_count += 1
         if not warning_logged:
             logger.info("SCANNING FOR GPS DEVICES.")
@@ -191,7 +191,7 @@ def monitor_requests():
             cleanup_virtual_device(device_name, active_devices[device_name])
             active_devices.pop(device_name, None)
 def main_loop():
-    global udp_socket, connection_error_logged
+    global udp_socket, connection_error_logged, UDP_IP
     last_check_time = time.time()
     last_valid_time = time.time()
     stable_start_time = None
@@ -267,7 +267,11 @@ def main_loop():
                         udp_socket.settimeout(SOCKET_TIMEOUT)
                         logger.info("GPS RESTARTED.")
                         break
-                    except Exception as e:
+                    except OSError as e:
+                        if e.errno == 99 and UDP_IP != "0.0.0.0":
+                            logger.error(f"Cannot assign requested address for {UDP_IP}. Falling back to 0.0.0.0")
+                            UDP_IP = "0.0.0.0"
+                            continue
                         attempt_count += 1
                         if not warning_logged:
                             logger.info("SCANNING FOR GPS DEVICE.")
