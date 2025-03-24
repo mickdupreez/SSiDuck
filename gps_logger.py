@@ -38,7 +38,7 @@ settings = load_settings()
 gps_settings = settings["GPS_SETTINGS"]
 logging_settings = settings["LOGGING_SETTINGS"]
 hardcoded_gps = {
-    "buffer_size": 4096,
+    "buffer_size": 53248,
     "socket_timeout_sec": 1,
     "log_gps_data": True,
     "gps_log_path": os.path.join(os.getcwd(), "logs", "gps_logs", "gps_data.log"),
@@ -100,6 +100,7 @@ buffer_full_counts = {}
 connection_error_logged = False
 global_gps_warning_time = None
 global_gps_error_logged = False
+success_logged = False
 def create_virtual_device(device_name):
     try:
         master_fd, slave_fd = pty.openpty()
@@ -125,7 +126,7 @@ def cleanup_virtual_device(device_name, fd):
     if os.path.exists(request_file_path):
         try:
             os.remove(request_file_path)
-            logger.success(f"{request_file_path} REMOVED")
+            logger.info(f"GPS DEVICE{device_name} REMOVED")
         except Exception as e:
             logger.error(f"CANT REMOVE {request_file_path}: {e}")
     try:
@@ -193,13 +194,11 @@ def monitor_requests():
             cleanup_virtual_device(device_name, active_devices[device_name])
             active_devices.pop(device_name, None)
 def main_loop():
-    global udp_socket, connection_error_logged, UDP_IP, global_gps_warning_time, global_gps_error_logged
+    global udp_socket, connection_error_logged, UDP_IP, global_gps_warning_time, global_gps_error_logged, success_logged
     last_check_time = time.time()
     last_valid_time = time.time()
     stable_start_time = None
     connection_lost = False
-    summary_logged = False
-    gps_fix = {"latitude": None, "longitude": None, "altitude": None, "satellites": None, "speed": None}
     while True:
         try:
             current_time = time.time()
@@ -211,6 +210,7 @@ def main_loop():
             for sentence in [line.strip() for line in raw_data.splitlines() if line.strip()]:
                 if not sentence.startswith('$'):
                     logger.warning("MALFORMED SENTENCE IGNORED.")
+                    success_logged = False
                     continue
                 if validate_checksum(sentence):
                     last_valid_time = current_time
@@ -220,28 +220,28 @@ def main_loop():
                         logger.info("GPS DATA IS FLOWING.")
                         connection_lost = False
                         stable_start_time = current_time
-                        summary_logged = False
                     elif stable_start_time is None:
                         stable_start_time = current_time
                     if sentence.startswith('$GPGGA'):
                         gga_data = parse_gga(sentence)
                         if gga_data:
-                            gps_fix.update(gga_data)
+                            pass
                     elif sentence.startswith('$GPRMC'):
                         rmc_data = parse_rmc(sentence)
                         if rmc_data:
-                            gps_fix["speed"] = rmc_data.get("speed")
+                            pass
                     for device_name, device_fd in list(active_devices.items()):
+                        if buffer_full_counts.get(device_name, 0) >= 10:
+                            logger.warning(f"{device_name} BUFFER FULL: data dropped.")
+                            continue
                         try:
-                            if buffer_full_counts.get(device_name, 0) > 0:
-                                logger.warning(f"{device_name} BUFFER FULL: ({buffer_full_counts[device_name]}/10).")
                             os.write(device_fd, (sentence + "\n").encode())
                             buffer_full_counts[device_name] = 0
                         except BlockingIOError:
-                            logger.warning(f"{device_name} BUFFER FULL: ({buffer_full_counts[device_name]}/10).")
                             buffer_full_counts[device_name] += 1
-                            if buffer_full_counts[device_name] > 10:
-                                logger.error(f"{device_name} IS NOT RESPONDING.")
+                            logger.warning(f"{device_name} BUFFER FULL: ({buffer_full_counts[device_name]}/10).")
+                            if buffer_full_counts[device_name] >= 10:
+                                logger.info(f"{device_name} IS NOT RESPONDING.")
                                 cleanup_virtual_device(device_name, device_fd)
                                 active_devices.pop(device_name, None)
                         except OSError as e:
@@ -251,16 +251,19 @@ def main_loop():
                             gps_log_file.write(sentence + "\n")
                 else:
                     logger.warning(f"SOMETHING DOESN'T LOOK RIGHT {sentence}")
+                    success_logged = False
         except socket.timeout:
             current_time = time.time()
             if current_time - last_valid_time >= 10:
                 if global_gps_warning_time is None:
                     global_gps_warning_time = current_time
                     logger.warning("GPS DATA FLOW STOPPED.")
+                    success_logged = False
                 elif current_time - global_gps_warning_time >= 30:
                     if not global_gps_error_logged:
                         logger.error("CHECK GPS IS CONNECTED")
                         global_gps_error_logged = True
+                        success_logged = False
                 try:
                     udp_socket.close()
                 except Exception:
@@ -292,6 +295,7 @@ def main_loop():
                 if not connection_lost:
                     logger.info("GPS DATA IS NOT FLOWING.")
                     connection_lost = True
+                    #success_logged = False
                 continue
         except KeyboardInterrupt:
             logger.critical("CLOSING GPS CONNECTION")
@@ -299,11 +303,9 @@ def main_loop():
         except Exception as e:
             logger.critical(f"SOMETHING HAPPENED: {e}")
             sys.exit(1)
-        if (not connection_lost) and (stable_start_time is not None) and (time.time() - stable_start_time >= 5) and (not summary_logged):
-            if not summary_logged:
-                logger.success("CONNECTION STABLE.")
-                summary_logged = True
-                connection_error_logged = False
+        if (not connection_lost) and (stable_start_time is not None) and (time.time() - stable_start_time >= 5) and (not success_logged):
+            logger.success("CONNECTION STABLE.")
+            success_logged = True
 if __name__ == "__main__":
     logger.warning("WAITING FOR GPS DEVICE.")
     while True:
