@@ -16,14 +16,12 @@ def load_settings(file_path="kismet_settings.json"):
 settings = load_settings()
 kismet_settings = settings["KISMET_SETTINGS"]
 logging_settings = settings["LOGGING_SETTINGS"]
-
 log_dir = os.path.expanduser("~/.local/bin/wardriver/logs/wardrive_logs/")
 kismet_log_path = os.path.expanduser("~/.local/bin/wardriver/logs/kismet_logs/kismet_data.log")
 log_file_path = os.path.expanduser("~/.local/bin/wardriver/logs/kismet_logs/kismet_logger.log")
 gps_monitor_log_path = os.path.expanduser("~/.local/bin/wardriver/logs/gps_logs/gps_monitor.log")
 kismet_launch_args = "-c wlan1 --no-remote"
 run_as_sudo = False
-
 RESTART_BACKOFF_SECONDS = 15
 KILL_RETRY_ATTEMPTS = 3
 KILL_RETRY_WAIT_SECONDS = 2
@@ -35,23 +33,25 @@ IGNORE_PATTERNS = [
     "specify baud=",
     "check your gps documentation"
 ]
-
 gps_device_name = kismet_settings["gps_device_name"]
 request_file_path = os.path.expanduser(f"~/.local/bin/wardriver/logs/gps_logs/gps_devices/{gps_device_name}")
 ignore_patterns = [pattern.lower() for pattern in IGNORE_PATTERNS]
-
 logger.remove()
 logger_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <magenta>KISMET</magenta> | <level>{level: <7}</level> | <cyan>{message}</cyan>"
 logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format=logger_format)
 logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time} | KISMET | {level} | {message}")
-
 kismet_process = None
 
 def cleanup_old_logs():
     for filename in ["wardrive.kismet", "wardrive.wiglecsv"]:
         file_path = os.path.join(log_dir, filename)
         if os.path.exists(file_path):
-            os.remove(file_path)
+            if filename == "wardrive.wiglecsv":
+                dest_dir = os.path.join(log_dir, "upload")
+                os.makedirs(dest_dir, exist_ok=True)
+                os.rename(file_path, os.path.join(dest_dir, filename))
+            else:
+                os.remove(file_path)
 
 def kill_existing_kismet():
     current_pid = os.getpid()
@@ -113,29 +113,59 @@ def start_kismet():
     cmd = (["sudo"] if run_as_sudo else []) + ["kismet"] + kismet_args + ["--log-prefix", log_dir, "--override", "wardrive"]
     with open(kismet_log_path, "w") as kismet_log_file:
         kismet_process = subprocess.Popen(cmd, stdout=kismet_log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid)
-    logger.success("KISMET IS RUNNING")
+    logger.success("WARDRIVING STARTED.")
     return kismet_process
 
 def monitor_gps_connection():
     global kismet_process
     gps_stable_prev = None
+    keywords = ["SUCCESS", "WARNING", "ERROR", "CRITICAL"]
     while True:
         try:
             with open(gps_monitor_log_path, 'r') as gps_file:
                 lines = gps_file.readlines()
-                last_line = lines[-1].strip() if lines else ""
+            if lines:
+                found_line = None
+                for line in reversed(lines):
+                    if any(keyword in line for keyword in keywords):
+                        found_line = line.strip()
+                        break
+                if found_line is None:
+                    found_line = lines[-1].strip()
+            else:
+                found_line = ""
         except Exception:
-            last_line = ""
-        if "SUCCESS" in last_line:
-            if gps_stable_prev != True:
-                logger.info("GPS CONNECTION STABLE.")
-            gps_stable_prev = True
+            found_line = ""
+        if "SUCCESS" in found_line:
+            gps_stable_prev = "SUCCESS"
             if kismet_process is None or kismet_process.poll() is not None:
                 kismet_process = start_kismet()
-        else:
-            if gps_stable_prev != False:
-                logger.warning(f"GPS CONNECTION UNSTABLE. {last_line}")
-            gps_stable_prev = False
+        elif "WARNING" in found_line:
+            if gps_stable_prev != "WARNING":
+                logger.warning("GPS INITILIZING.")
+            gps_stable_prev = "WARNING"
+            if kismet_process is not None and kismet_process.poll() is None:
+                try:
+                    os.killpg(kismet_process.pid, signal.SIGINT)
+                except Exception:
+                    pass
+                kismet_process = None
+                cleanup_old_logs()
+        elif "ERROR" in found_line:
+            if gps_stable_prev != "ERROR":
+                logger.error("NO GPS DEVICES")
+            gps_stable_prev = "ERROR"
+            if kismet_process is not None and kismet_process.poll() is None:
+                try:
+                    os.killpg(kismet_process.pid, signal.SIGINT)
+                except Exception:
+                    pass
+                kismet_process = None
+                cleanup_old_logs()
+        elif "CRITICAL" in found_line:
+            if gps_stable_prev != "CRITICAL":
+                logger.critical("GPS IS NOT RUNNING")
+            gps_stable_prev = "CRITICAL"
             if kismet_process is not None and kismet_process.poll() is None:
                 try:
                     os.killpg(kismet_process.pid, signal.SIGINT)
