@@ -16,10 +16,10 @@ def load_settings(file_path="kismet_settings.json"):
 settings = load_settings()
 kismet_settings = settings["KISMET_SETTINGS"]
 logging_settings = settings["LOGGING_SETTINGS"]
-log_dir = os.path.expanduser("~/.local/bin/wardriver/logs/wardrive_logs/")
-kismet_log_path = os.path.expanduser("~/.local/bin/wardriver/logs/kismet_logs/kismet_data.log")
-log_file_path = os.path.expanduser("~/.local/bin/wardriver/logs/kismet_logs/kismet_logger.log")
-gps_monitor_log_path = os.path.expanduser("~/.local/bin/wardriver/logs/gps_logs/gps_monitor.log")
+log_dir = os.path.join(os.getcwd(), "logs", "wardrive_logs")
+kismet_log_path = os.path.join(os.getcwd(), "logs", "kismet_logs", "kismet_data.log")
+log_file_path = os.path.join(os.getcwd(), "logs", "kismet_logs", "kismet_logger.log")
+gps_monitor_log_path = os.path.join(os.getcwd(), "logs", "gps_logs", "gps_monitor.log")
 kismet_launch_args = "-c wlan1 --no-remote"
 run_as_sudo = False
 RESTART_BACKOFF_SECONDS = 15
@@ -34,13 +34,14 @@ IGNORE_PATTERNS = [
     "check your gps documentation"
 ]
 gps_device_name = kismet_settings["gps_device_name"]
-request_file_path = os.path.expanduser(f"~/.local/bin/wardriver/logs/gps_logs/gps_devices/{gps_device_name}")
+request_file_path = os.path.join(os.getcwd(), "logs", "gps_logs", "gps_devices", gps_device_name)
 ignore_patterns = [pattern.lower() for pattern in IGNORE_PATTERNS]
 logger.remove()
-logger_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <magenta>KISMET</magenta> | <level>{level: <7}</level> | <cyan>{message}</cyan>"
+logger_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <magenta>KISMET</magenta> |<level>{level: <7}</level>| <cyan>{message}</cyan>"
 logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format=logger_format)
 logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time} | KISMET | {level} | {message}")
 kismet_process = None
+last_killed_pid = None
 
 def cleanup_old_logs():
     for filename in ["wardrive.kismet", "wardrive.wiglecsv"]:
@@ -54,6 +55,7 @@ def cleanup_old_logs():
                 os.remove(file_path)
 
 def kill_existing_kismet():
+    global last_killed_pid
     current_pid = os.getpid()
     for _ in range(KILL_RETRY_ATTEMPTS):
         found_processes = False
@@ -65,6 +67,8 @@ def kill_existing_kismet():
                     continue
                 if 'kismet' in proc_name or any('kismet' in arg for arg in proc_cmd):
                     if SKIP_KILL_SELF and proc.pid == current_pid:
+                        continue
+                    if last_killed_pid is not None and proc.pid == last_killed_pid:
                         continue
                     found_processes = True
                     subprocess.run(f"sudo kill -9 {proc.pid}", shell=True, check=False)
@@ -102,7 +106,7 @@ def update_kismet_conf(gps_device_name):
     subprocess.run(["sudo", "mv", temp_conf_path, kismet_conf_path], check=True)
 
 def start_kismet():
-    global kismet_process
+    global kismet_process, last_killed_pid
     kill_existing_kismet()
     cleanup_old_logs()
     os.makedirs(log_dir, exist_ok=True)
@@ -114,10 +118,11 @@ def start_kismet():
     with open(kismet_log_path, "w") as kismet_log_file:
         kismet_process = subprocess.Popen(cmd, stdout=kismet_log_file, stderr=subprocess.STDOUT, preexec_fn=os.setsid)
     logger.success("WARDRIVING STARTED.")
+    last_killed_pid = None
     return kismet_process
 
 def monitor_gps_connection():
-    global kismet_process
+    global kismet_process, last_killed_pid
     gps_stable_prev = None
     keywords = ["SUCCESS", "WARNING", "ERROR", "CRITICAL"]
     while True:
@@ -140,37 +145,41 @@ def monitor_gps_connection():
             gps_stable_prev = "SUCCESS"
             if kismet_process is None or kismet_process.poll() is not None:
                 kismet_process = start_kismet()
+                last_killed_pid = None
         elif "WARNING" in found_line:
             if gps_stable_prev != "WARNING":
                 logger.warning("GPS INITILIZING.")
             gps_stable_prev = "WARNING"
-            if kismet_process is not None and kismet_process.poll() is None:
+            if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid != last_killed_pid):
                 try:
                     os.killpg(kismet_process.pid, signal.SIGINT)
                 except Exception:
                     pass
+                last_killed_pid = kismet_process.pid
                 kismet_process = None
                 cleanup_old_logs()
         elif "ERROR" in found_line:
             if gps_stable_prev != "ERROR":
                 logger.error("NO GPS DEVICES")
             gps_stable_prev = "ERROR"
-            if kismet_process is not None and kismet_process.poll() is None:
+            if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid != last_killed_pid):
                 try:
                     os.killpg(kismet_process.pid, signal.SIGINT)
                 except Exception:
                     pass
+                last_killed_pid = kismet_process.pid
                 kismet_process = None
                 cleanup_old_logs()
         elif "CRITICAL" in found_line:
             if gps_stable_prev != "CRITICAL":
                 logger.critical("GPS IS NOT RUNNING")
             gps_stable_prev = "CRITICAL"
-            if kismet_process is not None and kismet_process.poll() is None:
+            if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid != last_killed_pid):
                 try:
                     os.killpg(kismet_process.pid, signal.SIGINT)
                 except Exception:
                     pass
+                last_killed_pid = kismet_process.pid
                 kismet_process = None
                 cleanup_old_logs()
         time.sleep(1)
@@ -178,7 +187,6 @@ def monitor_gps_connection():
 def cleanup():
     if os.path.exists(request_file_path):
         os.remove(request_file_path)
-        logger.info("Cleaned up request file.")
 
 def handle_exit(sig, frame):
     global kismet_process
@@ -188,7 +196,6 @@ def handle_exit(sig, frame):
         except Exception:
             pass
     cleanup()
-    logger.info("Watchdog exiting.")
     sys.exit(0)
 
 if __name__ == '__main__':
