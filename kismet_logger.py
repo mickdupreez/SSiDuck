@@ -47,7 +47,7 @@ def set_log_level(level,msg):
         success_flag=False
 
 def load_settings(file_path="kismet_settings.json"):
-    with open(file_path,'r') as file:
+    with open(file_path,"r") as file:
         return json.load(file)
 
 settings=load_settings()
@@ -59,7 +59,6 @@ log_file_path=os.path.join(os.getcwd(),"logs","kismet_logs","kismet_monitor.log"
 gps_monitor_log_path=os.path.join(os.getcwd(),"logs","gps_logs","gps_monitor.log")
 kismet_launch_args="-c wlan1 --no-remote"
 run_as_sudo=False
-RESTART_BACKOFF_SECONDS=15
 KILL_RETRY_ATTEMPTS=3
 KILL_RETRY_WAIT_SECONDS=2
 SKIP_KILL_SELF=True
@@ -69,6 +68,8 @@ request_file_path=os.path.join(os.getcwd(),"logs","gps_logs","gps_devices",gps_d
 logger.remove()
 logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> KISMET </magenta><blue>|</blue> <cyan>{message}</cyan>"
 logger.add(sys.stderr,level=logging_settings["log_level"].upper(),colorize=True,format=logger_format)
+if os.path.exists(log_file_path):
+    open(log_file_path,"w").close()
 logger.add(log_file_path,level=logging_settings["log_level"].upper(),format=logger_format)
 
 kismet_process=None
@@ -90,13 +91,13 @@ def kill_existing_kismet():
     current_pid=os.getpid()
     for _ in range(KILL_RETRY_ATTEMPTS):
         found_processes=False
-        for proc in psutil.process_iter(['pid','name','cmdline']):
+        for proc in psutil.process_iter(["pid","name","cmdline"]):
             try:
-                proc_name=(proc.info['name'] or '').lower()
-                proc_cmd=[arg.lower() for arg in (proc.info['cmdline'] or [])]
-                if 'tail' in proc_name or any('tail' in arg for arg in proc_cmd):
+                proc_name=(proc.info["name"] or "").lower()
+                proc_cmd=[arg.lower() for arg in (proc.info["cmdline"] or [])]
+                if "tail" in proc_name or any("tail" in arg for arg in proc_cmd):
                     continue
-                if 'kismet' in proc_name or any('kismet' in arg for arg in proc_cmd):
+                if "kismet" in proc_name or any("kismet" in arg for arg in proc_cmd):
                     if SKIP_KILL_SELF and proc.pid==current_pid:
                         continue
                     if last_killed_pid is not None and proc.pid==last_killed_pid:
@@ -133,7 +134,7 @@ def update_kismet_conf(gps_device_name):
         updated_lines.append(f"gps=serial:device=/dev/tty{gps_device_name},name=gps_logger")
     temp_conf_path="/tmp/kismet.conf.updated"
     with open(temp_conf_path,"w") as temp_conf:
-        temp_conf.write('\n'.join(updated_lines)+'\n')
+        temp_conf.write("\n".join(updated_lines)+"\n")
     subprocess.run(["sudo","mv",temp_conf_path,kismet_conf_path],check=True)
 
 def start_kismet():
@@ -141,7 +142,7 @@ def start_kismet():
     kill_existing_kismet()
     cleanup_old_logs()
     os.makedirs(log_dir,exist_ok=True)
-    open(request_file_path,'a').close()
+    open(request_file_path,"a").close()
     wait_for_gps_device()
     update_kismet_conf(gps_device_name)
     kismet_args=kismet_launch_args.split()
@@ -230,7 +231,7 @@ def handle_exit(sig,frame):
     set_log_level("critical","STOPPED, KEYBOARD INTERRUPT.")
     sys.exit(0)
 
-if __name__=='__main__':
+if __name__=="__main__":
     signal.signal(signal.SIGINT,handle_exit)
     signal.signal(signal.SIGTERM,handle_exit)
     monitor_gps_connection()
