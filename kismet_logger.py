@@ -64,22 +64,20 @@ KILL_RETRY_WAIT_SECONDS=2
 SKIP_KILL_SELF=True
 gps_device_name=kismet_settings["gps_device_name"]
 request_file_path=os.path.join(os.getcwd(),"logs","gps_logs","gps_devices",gps_device_name)
-
 logger.remove()
 logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> KISMET </magenta><blue>|</blue> <cyan>{message}</cyan>"
 logger.add(sys.stderr,level=logging_settings["log_level"].upper(),colorize=True,format=logger_format)
 if os.path.exists(log_file_path):
     open(log_file_path,"w").close()
 logger.add(log_file_path,level=logging_settings["log_level"].upper(),format=logger_format)
-
 kismet_process=None
 last_killed_pid=None
 
 def cleanup_old_logs():
-    for filename in ["kismet.kismet","kismet.wiglecsv"]:
-        file_path=os.path.join(log_dir,filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    for filename in ["kismet.kismet","kismet.kismet-journal","kismet.wiglecsv"]:
+        p=os.path.join(log_dir,filename)
+        if os.path.exists(p):
+            os.remove(p)
 
 def kill_existing_kismet():
     global last_killed_pid
@@ -214,6 +212,7 @@ def monitor_gps_connection():
 def cleanup():
     if os.path.exists(request_file_path):
         os.remove(request_file_path)
+    cleanup_old_logs()
 
 def handle_exit(sig,frame):
     global kismet_process
