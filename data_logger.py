@@ -212,15 +212,19 @@ def main():
         set_log_level("error",f"Processing dir '{processing_dir}' does not exist.")
         sys.exit(1)
     os.makedirs(upload_dir,exist_ok=True)
+    existing_files=glob.glob(os.path.join(processing_dir,"wardrive-*.csv"))
+    for ef in existing_files:
+        base=os.path.basename(ef)
+        shutil.move(ef,os.path.join(upload_dir,base))
     now_str=datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     output_filename=f"wardrive-{now_str}.csv"
-    output_filepath=os.path.join(upload_dir,output_filename)
+    output_filepath=os.path.join(processing_dir,output_filename)
     set_log_level("info",f"Output CSV: {output_filepath}")
     iteration=0
     merged_previous={}
     while True:
         iteration+=1
-        wigle_files=glob.glob(os.path.join(processing_dir,"*.wiglecsv"))
+        wigle_files=glob.glob(os.path.join(log_dir,"*.wiglecsv"))
         if not wigle_files:
             time.sleep(1)
             continue
