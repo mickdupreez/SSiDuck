@@ -109,9 +109,9 @@ os.makedirs(requests_directory, exist_ok=True)
 
 logger.remove()
 if logging_settings.get("log_to_file", True):
-    logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time:DD/MM @ HH:mm:ss.SSS}| GPS | {level:^7} | {message}")
+    logger.add(log_file_path, level=logging_settings["log_level"].upper(), format="{time:DD/MM @ HH:mm:ss.SSS}|{level:^9}|GPS| {message}")
 if logging_settings.get("log_to_terminal", True):
-    logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format="<yellow>{time:DD/MM @ HH:mm:ss.SSS}</yellow><red>| GPS |</red><level>{level:^7}</level><red>|</red> <cyan>{message}</cyan>")
+    logger.add(sys.stderr, level=logging_settings["log_level"].upper(), colorize=True, format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><red>|</red><level>{level:^9}</level><red>| GPS |</red> <cyan>{message}</cyan>")
 
 if os.path.exists(log_file_path):
     open(log_file_path, "w").close()
