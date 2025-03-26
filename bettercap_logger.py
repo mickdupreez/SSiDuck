@@ -265,6 +265,9 @@ def handle_bettercap_output():
         if ch:
             write_output_csv()
 
+def cleanup():
+    cleanup_old_csv()
+
 def monitor_gps_connection():
     g=None
     while True:
@@ -306,6 +309,7 @@ def monitor_gps_connection():
 
 def handle_exit(sig,frame):
     stop_bettercap()
+    cleanup()
     set_log_level("critical","STOPPED, KEYBOARD INTERRUPT.")
     sys.exit(0)
 
