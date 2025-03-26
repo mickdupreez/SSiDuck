@@ -76,10 +76,10 @@ kismet_process=None
 last_killed_pid=None
 
 def cleanup_old_logs():
-    for filename in ["wardrive.kismet","wardrive.wiglecsv"]:
+    for filename in ["kismet.kismet","kismet.wiglecsv"]:
         file_path=os.path.join(log_dir,filename)
         if os.path.exists(file_path):
-            if filename=="wardrive.wiglecsv":
+            if filename=="kismet.wiglecsv":
                 dest_dir=os.path.join(log_dir,"upload")
                 os.makedirs(dest_dir,exist_ok=True)
                 os.rename(file_path,os.path.join(dest_dir,filename))
