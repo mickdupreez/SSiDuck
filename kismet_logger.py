@@ -79,12 +79,7 @@ def cleanup_old_logs():
     for filename in ["kismet.kismet","kismet.wiglecsv"]:
         file_path=os.path.join(log_dir,filename)
         if os.path.exists(file_path):
-            if filename=="kismet.wiglecsv":
-                dest_dir=os.path.join(log_dir,"processing")
-                os.makedirs(dest_dir,exist_ok=True)
-                os.rename(file_path,os.path.join(dest_dir,filename))
-            else:
-                os.remove(file_path)
+            os.remove(file_path)
 
 def kill_existing_kismet():
     global last_killed_pid
