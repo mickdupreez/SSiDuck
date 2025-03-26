@@ -74,13 +74,13 @@ def kill_existing_bettercap():
     current_pid=os.getpid()
     for _ in range(KILL_RETRY_ATTEMPTS):
         found_processes=False
-        for proc in psutil.process_iter(['pid','name','cmdline']):
+        for proc in psutil.process_iter(["pid","name","cmdline"]):
             try:
-                n=(proc.info['name']or'').lower()
-                c=[a.lower()for a in(proc.info['cmdline']or[])]
-                if IGNORE_TAIL and('tail'in n or any('tail'in x for x in c)):
+                n=(proc.info["name"] or "").lower()
+                c=[a.lower() for a in (proc.info["cmdline"] or [])]
+                if IGNORE_TAIL and ("tail" in n or any("tail" in x for x in c)):
                     continue
-                if 'bettercap'in n or any('bettercap'in x for x in c):
+                if "bettercap" in n or any("bettercap" in x for x in c):
                     if SKIP_KILL_SELF and proc.pid==current_pid:
                         continue
                     if last_killed_pid is not None and proc.pid==last_killed_pid:
@@ -97,26 +97,24 @@ def kill_existing_bettercap():
 def cleanup_old_csv():
     p=os.path.join(wardrive_log_dir,"bettercap.wiglecsv")
     if os.path.exists(p):
-        u=os.path.join(wardrive_log_dir,"processing")
-        os.makedirs(u,exist_ok=True)
-        os.rename(p,os.path.join(u,"bettercap.wiglecsv"))
+        os.remove(p)
 
 def extract_box(text):
     lines=text.splitlines()
     s=None
     e=None
     for i,l in enumerate(lines):
-        if l.startswith("┌")or l.startswith("╔")or(l.startswith("+")and"-"in l):
+        if l.startswith("┌") or l.startswith("╔") or (l.startswith("+") and "-" in l):
             s=i
             break
     if s is not None:
         for j in range(s,len(lines)):
-            if lines[j].startswith("└")or lines[j].startswith("╝")or(lines[j].startswith("+")and"-"in lines[j]):
+            if lines[j].startswith("└") or lines[j].startswith("╝") or (lines[j].startswith("+") and "-" in lines[j]):
                 e=j
                 break
         if e is None:
             e=len(lines)-1
-        return"\n".join(lines[s:e+1])
+        return "\n".join(lines[s:e+1])
     return text
 
 def parse_box_data(box_text):
@@ -124,19 +122,19 @@ def parse_box_data(box_text):
     lines=box_text.splitlines()
     t=None
     for i,l in enumerate(lines):
-        if l.startswith("├")or l.startswith("╟"):
+        if l.startswith("├") or l.startswith("╟"):
             t=i
             break
-        if(l.startswith("+")and"-"in l and"┬"not in l)or"┼"in l:
+        if (l.startswith("+") and "-" in l and "┬" not in l) or "┼" in l:
             t=i
             break
     if t is None:
         return rows
     d=[]
     for l in lines[t+1:]:
-        if l.startswith("└")or l.startswith("╚")or(l.startswith("+")and"-"in l):
+        if l.startswith("└") or l.startswith("╚") or (l.startswith("+") and "-" in l):
             break
-        if"│"in l:
+        if "│" in l:
             d.append(l)
     for dl in d:
         p=dl.split("│")
@@ -187,7 +185,7 @@ def write_output_csv():
         return parse_seen_time(i[1]["Seen"])
     s=sorted(best_entries.items(),key=k)
     try:
-        with open(p,"w",encoding="utf-8")as f:
+        with open(p,"w",encoding="utf-8") as f:
             f.write("RSSI,MAC,Vendor,Flags,Seen\n")
             for m,r in s:
                 f.write("{},{},{},{},{}\n".format(r["RSSI"],r["MAC"],r["Vendor"],r["Flags"],r["Seen"]))
@@ -222,7 +220,7 @@ def start_bettercap():
 
 def stop_bettercap():
     global bettercap_process,pty_fd,last_killed_pid,bettercap_data_fd
-    if bettercap_process is not None and bettercap_process.poll()is None:
+    if bettercap_process is not None and bettercap_process.poll() is None:
         try:
             os.write(pty_fd,b"quit\n")
             time.sleep(1)
@@ -237,7 +235,7 @@ def stop_bettercap():
     pty_fd=None
 
 def handle_bettercap_output():
-    if bettercap_process is None or bettercap_process.poll()is not None or pty_fd is None:
+    if bettercap_process is None or bettercap_process.poll() is not None or pty_fd is None:
         return
     try:
         os.write(pty_fd,b"ble.show\n")
@@ -272,32 +270,32 @@ def monitor_gps_connection():
     while True:
         l=""
         try:
-            with open(gps_monitor_log_path,"r")as f:
+            with open(gps_monitor_log_path,"r") as f:
                 lines=f.readlines()
             if lines:
                 for line in reversed(lines):
-                    if"SUCCESS"in line or"WARNING"in line or"ERROR"in line or"CRITICAL"in line:
+                    if "SUCCESS" in line or "WARNING" in line or "ERROR" in line or "CRITICAL" in line:
                         l=line.strip()
                         break
                 if not l:
                     l=lines[-1].strip()
         except:
             pass
-        if"SUCCESS"in l:
+        if "SUCCESS" in l:
             if g!="SUCCESS":
                 start_bettercap()
             g="SUCCESS"
-        elif"WARNING"in l:
+        elif "WARNING" in l:
             if g!="WARNING":
                 set_log_level("warning","GPS INITIALIZING")
                 stop_bettercap()
             g="WARNING"
-        elif"ERROR"in l:
+        elif "ERROR" in l:
             if g!="ERROR":
                 set_log_level("error","NO GPS DEVICES")
                 stop_bettercap()
             g="ERROR"
-        elif"CRITICAL"in l:
+        elif "CRITICAL" in l:
             if g!="CRITICAL":
                 set_log_level("critical","GPS IS NOT RUNNING")
                 stop_bettercap()
