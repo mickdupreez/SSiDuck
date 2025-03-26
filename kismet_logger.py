@@ -80,7 +80,7 @@ def cleanup_old_logs():
         file_path=os.path.join(log_dir,filename)
         if os.path.exists(file_path):
             if filename=="kismet.wiglecsv":
-                dest_dir=os.path.join(log_dir,"upload")
+                dest_dir=os.path.join(log_dir,"processing")
                 os.makedirs(dest_dir,exist_ok=True)
                 os.rename(file_path,os.path.join(dest_dir,filename))
             else:
