@@ -9,14 +9,20 @@ import fcntl
 import time
 from loguru import logger
 
-error_flag = False
-warning_flag = False
-success_flag = False
-critical_flag = False
+error_flag=False
+warning_flag=False
+success_flag=False
+critical_flag=False
 
 def set_log_level(level,msg):
     global error_flag,warning_flag,success_flag,critical_flag
-    if level=="error" and not error_flag:
+    if level=="trace":
+        logger.trace(msg)
+    elif level=="debug":
+        logger.debug(msg)
+    elif level=="info":
+        logger.info(msg)
+    elif level=="error" and not error_flag:
         logger.error(msg)
         error_flag=True
         warning_flag=False
