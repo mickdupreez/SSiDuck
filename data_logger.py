@@ -5,254 +5,175 @@ import csv
 import argparse
 import signal
 import sys
-import re
 import shutil
 import time
 from datetime import datetime
 from loguru import logger
 
-error_flag=False
-warning_flag=False
-success_flag=False
-critical_flag=False
+error_flag = False
+warning_flag = False
+success_flag = False
+critical_flag = False
 
-def set_log_level(level,msg):
-    global error_flag,warning_flag,success_flag,critical_flag
-    if level=="trace":
+def set_log_level(level, msg):
+    global error_flag, warning_flag, success_flag, critical_flag
+    if level == "trace":
         logger.trace(msg)
-    elif level=="debug":
+    elif level == "debug":
         logger.debug(msg)
-    elif level=="info":
+    elif level == "info":
         logger.info(msg)
-    elif level=="error" and not error_flag:
+    elif level == "error" and not error_flag:
         logger.error(msg)
-        error_flag=True
-        warning_flag=False
-        success_flag=False
-        critical_flag=False
-    elif level=="warning" and not warning_flag:
+        error_flag = True
+        warning_flag = False
+        success_flag = False
+        critical_flag = False
+    elif level == "warning" and not warning_flag:
         logger.warning(msg)
-        warning_flag=True
-        error_flag=False
-        success_flag=False
-        critical_flag=False
-    elif level=="success" and not success_flag:
+        warning_flag = True
+        error_flag = False
+        success_flag = False
+        critical_flag = False
+    elif level == "success" and not success_flag:
         logger.success(msg)
-        success_flag=True
-        error_flag=False
-        warning_flag=False
-        critical_flag=False
-    elif level=="critical" and not critical_flag:
+        success_flag = True
+        error_flag = False
+        warning_flag = False
+        critical_flag = False
+    elif level == "critical" and not critical_flag:
         logger.critical(msg)
-        critical_flag=True
-        error_flag=False
-        warning_flag=False
-        success_flag=False
+        critical_flag = True
+        error_flag = False
+        warning_flag = False
+        success_flag = False
 
 logger.remove()
-fmt="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGE </magenta><blue>|</blue> <cyan>{message}</cyan>"
-logger.add(sys.stderr,level="INFO",colorize=True,format=fmt)
+fmt = "<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGE </magenta><blue>|</blue> <cyan>{message}</cyan>"
+logger.add(sys.stderr, level="INFO", colorize=True, format=fmt)
 
-HEADER_LINE_1="WigleWifi-1.4,appRelease=Kismet202307R1,model=Kismet202307R1,release=2023.07.R1,device=kismet,display=kismet,board=kismet,brand=kismet"
-HEADER_LINE_2="MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type"
-OUTPUT_COLUMNS=["MAC","SSID","AuthMode","FirstSeen","Channel","RSSI","CurrentLatitude","CurrentLongitude","AltitudeMeters","AccuracyMeters","Type"]
-
-def signal_handler(sig,frame):
-    set_log_level("info","Shutdown signal received. Exiting...")
+def signal_handler(sig, frame):
+    set_log_level("info", "Shutdown signal received. Exiting...")
     sys.exit(0)
 
-signal.signal(signal.SIGINT,signal_handler)
-signal.signal(signal.SIGTERM,signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
-def parse_bettercap_file(filepath,base_date):
-    data={}
+def process_wigle_file(filepath, output_filepath, processed_macs):
+    """Process the wigle file and append only new devices to the output file"""
     try:
-        with open(filepath,"r",encoding="utf-8") as f:
-            lines=f.read().splitlines()
+        # Read the source file
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+            if len(lines) < 2:  # Need at least header lines
+                return False
+            
+            header1 = lines[0].strip()
+            header2 = lines[1].strip()
+            
+            # Create output file with headers if it doesn't exist
+            if not os.path.exists(output_filepath):
+                with open(output_filepath, 'w') as outf:
+                    outf.write(header1 + '\n')
+                    outf.write(header2 + '\n')
+            
+            # Process new entries
+            new_devices = 0
+            with open(output_filepath, 'a') as outf:
+                for line in lines[2:]:  # Skip headers
+                    parts = line.strip().split(',')
+                    if len(parts) > 0:
+                        mac = parts[0]
+                        if mac not in processed_macs:
+                            outf.write(line)
+                            processed_macs.add(mac)
+                            new_devices += 1
+            
+            if new_devices > 0:
+                set_log_level("debug", f"Added {new_devices} new devices from: {filepath}")
+            return True
+            
     except Exception as e:
-        set_log_level("error",f"Error reading bettercap: {e}")
-        return data
-    for line in lines[1:]:
-        if not line.strip():
-            continue
-        parts=[p.strip() for p in line.split(",")]
-        rssi=mac=vendor=flags=seen=""
-        if len(parts)==5:
-            rssi,mac,vendor,flags,seen=parts
-        elif len(parts)==7:
-            rssi=parts[0]
-            mac=parts[1]
-            vendor=parts[2]+", "+parts[3]
-            flags=parts[4]+", "+parts[5]
-            seen=parts[6]
-        elif len(parts)>7:
-            rssi=parts[0]
-            mac=parts[1]
-            seen=parts[-1]
-            middle=parts[2:-1]
-            half=len(middle)//2
-            vendor=", ".join(middle[:half])
-            flags=", ".join(middle[half:])
-        else:
-            continue
-        rssi=rssi.replace("dBm","").strip()
-        full_timestamp=f"{base_date} {seen}"
-        record={
-            "MAC":mac,
-            "SSID":vendor,
-            "AuthMode":flags,
-            "FirstSeen":full_timestamp,
-            "Channel":"",
-            "RSSI":rssi,
-            "CurrentLatitude":"",
-            "CurrentLongitude":"",
-            "AltitudeMeters":"",
-            "AccuracyMeters":"",
-            "Type":""
-        }
-        data[mac]=record
-    return data
+        set_log_level("error", f"Error processing file {filepath}: {e}")
+        return False
 
-def parse_kismet_file(filepath):
-    data={}
-    try:
-        with open(filepath,"r",encoding="utf-8",errors="replace") as f:
-            reader=csv.reader(f)
-            next(reader,None)
-            header2=next(reader,None)
-            if not header2:
-                set_log_level("error",f"No valid header in {filepath}")
-                return data
-            for row in reader:
-                if not row or len(row)<len(OUTPUT_COLUMNS):
-                    continue
-                record=dict(zip(OUTPUT_COLUMNS,row))
-                mac=record.get("MAC","")
-                if mac:
-                    data[mac]=record
-    except Exception as e:
-        set_log_level("error",f"Error reading kismet: {e}")
-    return data
+def start_new_session(processing_dir, upload_dir, current_file=None):
+    """Start a new session by moving current file to upload and creating new one"""
+    # Move current file to upload if it exists
+    if current_file and os.path.exists(current_file):
+        try:
+            shutil.move(current_file, upload_dir)
+            set_log_level("info", "Moved previous session file to upload directory")
+        except Exception as e:
+            set_log_level("error", f"Failed to move previous session file: {e}")
 
-def merge_logs(bettercap_data,kismet_data):
-    merged={}
-    for mac,record in kismet_data.items():
-        merged[mac]=record
-    for mac,bc_record in bettercap_data.items():
-        if mac in merged:
-            merged[mac]["SSID"]=bc_record.get("SSID",merged[mac]["SSID"])
-            merged[mac]["AuthMode"]=bc_record.get("AuthMode",merged[mac]["AuthMode"])
-            merged[mac]["FirstSeen"]=bc_record.get("FirstSeen",merged[mac]["FirstSeen"])
-            merged[mac]["RSSI"]=bc_record.get("RSSI",merged[mac]["RSSI"])
-        else:
-            merged[mac]=bc_record
-        merged[mac]["Type"]="BLE"
-    fallback_gps=None
-    fallback_gps_time=None
-    for record in kismet_data.values():
-        if record.get("CurrentLatitude","").strip() and record.get("CurrentLongitude","").strip():
-            try:
-                t=datetime.strptime(record["FirstSeen"],"%Y-%m-%d %H:%M:%S")
-            except:
-                continue
-            if fallback_gps is None or t>fallback_gps_time:
-                fallback_gps=record
-                fallback_gps_time=t
-    if fallback_gps:
-        for rec in merged.values():
-            if rec.get("Type")=="BLE":
-                if not rec.get("Channel","").strip() or not rec.get("CurrentLatitude","").strip():
-                    rec["Channel"]=fallback_gps.get("Channel","")
-                    rec["CurrentLatitude"]=fallback_gps.get("CurrentLatitude","")
-                    rec["CurrentLongitude"]=fallback_gps.get("CurrentLongitude","")
-                    rec["AltitudeMeters"]=fallback_gps.get("AltitudeMeters","")
-                    rec["AccuracyMeters"]=fallback_gps.get("AccuracyMeters","")
-    return merged
-
-def write_merged_csv(merged_data,output_filepath):
-    try:
-        with open(output_filepath,"w",newline="",encoding="utf-8") as f:
-            f.write(HEADER_LINE_1+"\n")
-            f.write(HEADER_LINE_2+"\n")
-            writer=csv.writer(f)
-            sorted_records=sorted(merged_data.values(),key=lambda r:r.get("FirstSeen",""))
-            for record in sorted_records:
-                row=[record.get(col,"") for col in OUTPUT_COLUMNS]
-                writer.writerow(row)
-        set_log_level("debug",f"Merged CSV updated: {output_filepath}")
-    except Exception as e:
-        set_log_level("error",f"Error writing merged CSV: {e}")
-
-def parse_wigle_file(filepath):
-    lines=[]
-    try:
-        with open(filepath,"r",encoding="utf-8",errors="replace") as f:
-            lines=f.read().splitlines()
-    except:
-        return {},{}
-    if not lines:
-        return {},{}
-    if "WigleWifi-1.4" in lines[0]:
-        return {},parse_kismet_file(filepath)
-    base_date=""
-    bd_match=re.match(r"(\d{4}-\d{2}-\d{2})_",os.path.basename(filepath))
-    if bd_match:
-        base_date=bd_match.group(1)
-    return parse_bettercap_file(filepath,base_date),{}
+    # Create new session file
+    now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_filename = f"wardrive-{now_str}.csv"
+    return os.path.join(processing_dir, output_filename)
 
 def main():
-    parser=argparse.ArgumentParser(description="")
-    parser.add_argument("--log-dir",type=str,default="logs/wardrive_logs/",help="")
-    parser.add_argument("--interval",type=int,default=10,help="")
-    args=parser.parse_args()
-    log_dir=os.path.expanduser(args.log_dir)
-    processing_dir=os.path.join(log_dir,"processing")
-    upload_dir=os.path.join(log_dir,"uploading")
+    parser = argparse.ArgumentParser(description="Process and move wardrive data files")
+    parser.add_argument("--log-dir", type=str, default="logs/wardrive_logs/", help="Directory containing wardrive logs")
+    parser.add_argument("--interval", type=int, default=10, help="Status update interval in iterations")
+    args = parser.parse_args()
+
+    log_dir = os.path.expanduser(args.log_dir)
+    processing_dir = os.path.join(log_dir, "processing")
+    upload_dir = os.path.join(log_dir, "uploading")
+
     if not os.path.isdir(processing_dir):
-        set_log_level("error",f"Processing dir '{processing_dir}' does not exist.")
+        set_log_level("error", f"Processing dir '{processing_dir}' does not exist.")
         sys.exit(1)
-    os.makedirs(upload_dir,exist_ok=True)
-    existing_files=glob.glob(os.path.join(processing_dir,"wardrive-*.csv"))
+
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # Move any existing processing files to upload at startup
+    existing_files = glob.glob(os.path.join(processing_dir, "wardrive-*.csv"))
     for ef in existing_files:
-        base=os.path.basename(ef)
-        shutil.move(ef,os.path.join(upload_dir,base))
-    now_str=datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_filename=f"wardrive-{now_str}.csv"
-    output_filepath=os.path.join(processing_dir,output_filename)
-    set_log_level("info",f"Output CSV: {output_filepath}")
-    iteration=0
-    merged_previous={}
+        try:
+            shutil.move(ef, upload_dir)
+        except Exception as e:
+            set_log_level("error", f"Failed to move existing file {ef}: {e}")
+
+    output_filepath = start_new_session(processing_dir, upload_dir)
+    last_mtime = None
+    iteration = 0
+    processed_macs = set()
+    had_files = False
+    
     while True:
-        iteration+=1
-        wigle_files=glob.glob(os.path.join(log_dir,"*.wiglecsv"))
-        if not wigle_files:
-            time.sleep(1)
-            continue
-        all_bettercap={}
-        all_kismet={}
-        for wf in wigle_files:
-            b,k=parse_wigle_file(wf)
-            for m,r in b.items():
-                all_bettercap[m]=r
-            for m,r in k.items():
-                all_kismet[m]=r
-        merged=merge_logs(all_bettercap,all_kismet)
-        write_merged_csv(merged,output_filepath)
-        if iteration%args.interval==0:
-            new_lines=0
-            updates=0
-            if not merged_previous:
-                new_lines=len(merged)
-            else:
-                for m in merged:
-                    if m not in merged_previous:
-                        new_lines+=1
-                    else:
-                        if merged[m]!=merged_previous[m]:
-                            updates+=1
-            set_log_level("info",f"Iteration #{iteration}: new {new_lines}, updates {updates}")
-            merged_previous={k:v.copy() for k,v in merged.items()}
+        iteration += 1
+        
+        # Look for wigle files
+        wigle_files = glob.glob(os.path.join(log_dir, "*.wiglecsv"))
+        
+        # Handle session transitions
+        if wigle_files:
+            if not had_files:  # No files before, but now we have some - start new session
+                output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
+                processed_macs.clear()
+                last_mtime = None
+            had_files = True
+            
+            latest_file = max(wigle_files, key=os.path.getmtime)
+            current_mtime = os.path.getmtime(latest_file)
+            
+            # Only process if the file has been modified
+            if current_mtime != last_mtime:
+                if process_wigle_file(latest_file, output_filepath, processed_macs):
+                    last_mtime = current_mtime
+                    
+                    if iteration % args.interval == 0:
+                        set_log_level("info", f"Iteration #{iteration}: {len(processed_macs)} total devices")
+        else:
+            if had_files:  # Had files before, but now none - end session
+                output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
+                processed_macs.clear()
+                last_mtime = None
+            had_files = False
+
         time.sleep(1)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
