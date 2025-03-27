@@ -20,6 +20,7 @@ bettercap_data_fd=None
 
 # Add these constants at the top after imports
 SETTINGS_FILE = os.path.join(os.getcwd(), "bettercap_settings.json")
+MAX_LOG_LINES = 10000
 
 # Add these global variables after the existing ones
 gps_latitude = None
@@ -227,7 +228,6 @@ def parse_gps_data(text):
                 satellites = int(satellites_match.group(1))
                 gps_accuracy = 100.0 / (quality * satellites) if quality * satellites > 0 else 100.0
             
-            logger.debug(f"GPS Data: lat={gps_latitude}, lon={gps_longitude}, alt={gps_altitude}, acc={gps_accuracy}")
             return True
     except Exception as e:
         logger.error(f"Failed to parse GPS data: {e}")
@@ -246,13 +246,20 @@ def write_output_csv():
             f.write("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n")
             # Write data
             for m, r in s:
-                # Extract RSSI value
+                # Extract RSSI value and remove commas
                 try:
                     rssi = float(r["RSSI"].lower().replace("dbm", "").strip())
                 except:
                     rssi = 0
-                # Format the line with available data
-                f.write(f"{r['MAC']},{r['Vendor']},{r['Flags']},{parse_seen_time(r['Seen'])},,{rssi},{gps_latitude or ''},{gps_longitude or ''},{gps_altitude or ''},{gps_accuracy or ''},BLE\n")
+                
+                # Clean all fields by removing commas
+                mac = r['MAC'].replace(',', '')
+                vendor = r['Vendor'].replace(',', '')
+                flags = r['Flags'].replace(',', '')
+                seen_time = parse_seen_time(r['Seen'])
+                
+                # Format the line with cleaned data
+                f.write(f"{mac},{vendor},{flags},{seen_time},,{rssi},{gps_latitude or ''},{gps_longitude or ''},{gps_altitude or ''},{gps_accuracy or ''},BLE\n")
     except Exception as e:
         logger.error(f"Failed to write CSV: {e}")
 
@@ -280,8 +287,10 @@ def start_bettercap():
     best_entries = {}
     os.makedirs(bettercap_log_dir, exist_ok=True)
     os.makedirs(wardrive_log_dir, exist_ok=True)
-    open(bettercap_data_path, "w").close()
-    bettercap_data_fd = open(bettercap_data_path, "a")
+    
+    # Delete existing bettercap_data.log file
+    if os.path.exists(bettercap_data_path):
+        os.remove(bettercap_data_path)
     
     pty_master, slave_fd = os.openpty()
     fl = fcntl.fcntl(pty_master, fcntl.F_GETFL)
@@ -289,7 +298,7 @@ def start_bettercap():
     
     try:
         bettercap_process = subprocess.Popen(
-            ["sudo", "bettercap"],
+            ["sudo", "bettercap", "--no-colors"],
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
@@ -311,7 +320,7 @@ def start_bettercap():
         pass
         
     pty_fd = pty_master
-    set_log_level("success", "WARDRIVING STARTED WITH GPS")
+    set_log_level("success", "WARDRIVING")
 
 def stop_bettercap():
     global bettercap_process,pty_fd,last_killed_pid,bettercap_data_fd
@@ -328,6 +337,31 @@ def stop_bettercap():
     bettercap_data_fd=None
     bettercap_process=None
     pty_fd=None
+    # Add cleanup of wiglecsv file when bettercap stops
+    cleanup_old_csv()
+
+def rotate_log_file(new_content):
+    global bettercap_data_path
+    try:
+        # Read existing lines if file exists
+        lines = []
+        if os.path.exists(bettercap_data_path):
+            with open(bettercap_data_path, 'r') as f:
+                lines = f.readlines()
+        
+        # Add new content
+        new_lines = new_content.splitlines(True)  # Keep line endings
+        lines.extend(new_lines)
+        
+        # Keep only last MAX_LOG_LINES
+        if len(lines) > MAX_LOG_LINES:
+            lines = lines[-MAX_LOG_LINES:]
+        
+        # Write back to file
+        with open(bettercap_data_path, 'w') as f:
+            f.writelines(lines)
+    except Exception as e:
+        logger.error(f"Failed to rotate log file: {e}")
 
 def handle_bettercap_output():
     if bettercap_process is None or bettercap_process.poll() is not None or pty_fd is None:
@@ -353,9 +387,9 @@ def handle_bettercap_output():
             except:
                 break
     txt = c.decode("utf-8", errors="replace")
-    if bettercap_data_fd:
-        bettercap_data_fd.write(txt)
-        bettercap_data_fd.flush()
+    
+    # Replace direct file write with rotate_log_file
+    rotate_log_file(txt)
     
     # Parse GPS data first
     parse_gps_data(txt)
