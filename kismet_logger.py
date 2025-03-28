@@ -65,7 +65,7 @@ SKIP_KILL_SELF=True
 gps_device_name=kismet_settings["gps_device_name"]
 request_file_path=os.path.join(os.getcwd(),"logs","gps_logs","gps_devices",gps_device_name)
 logger.remove()
-logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> KISMET </magenta><blue>|</blue> <cyan>{message}</cyan>"
+logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> WiFi </magenta><cyan>{message}</cyan>"
 logger.add(sys.stderr,level=logging_settings["log_level"].upper(),colorize=True,format=logger_format)
 if os.path.exists(log_file_path):
     open(log_file_path,"w").close()
@@ -142,7 +142,7 @@ def start_kismet():
     cmd=(["sudo"] if run_as_sudo else [])+["kismet"]+kismet_args+["--log-prefix",log_dir,"--override","wardrive"]
     with open(kismet_log_path,"w") as kismet_log_file:
         kismet_process=subprocess.Popen(cmd,stdout=kismet_log_file,stderr=subprocess.STDOUT,preexec_fn=os.setsid)
-    set_log_level("success","WARDRIVING.")
+    set_log_level("success","LOGGING.")
     last_killed_pid=None
     return kismet_process
 
@@ -173,7 +173,7 @@ def monitor_gps_connection():
                 last_killed_pid=None
         elif "WARNING" in found_line:
             if gps_stable_prev!="WARNING":
-                set_log_level("warning","INITIALIZING.")
+                set_log_level("warning","SCANNING.")
             gps_stable_prev="WARNING"
             if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid!=last_killed_pid):
                 try:
@@ -185,7 +185,7 @@ def monitor_gps_connection():
                 cleanup_old_logs()
         elif "ERROR" in found_line:
             if gps_stable_prev!="ERROR":
-                set_log_level("error","STOPPING, NO GPS DATA.")
+                set_log_level("error","NO GPS DATA.")
             gps_stable_prev="ERROR"
             if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid!=last_killed_pid):
                 try:
@@ -197,7 +197,7 @@ def monitor_gps_connection():
                 cleanup_old_logs()
         elif "CRITICAL" in found_line:
             if gps_stable_prev!="CRITICAL":
-                set_log_level("critical","STOPPED, NO GPS DEVICE.")
+                set_log_level("critical","GPS IS DOWN.")
             gps_stable_prev="CRITICAL"
             if kismet_process is not None and kismet_process.poll() is None and (last_killed_pid is None or kismet_process.pid!=last_killed_pid):
                 try:
@@ -222,7 +222,7 @@ def handle_exit(sig,frame):
         except:
             pass
     cleanup()
-    set_log_level("critical","STOPPED, KEYBOARD INTERRUPT.")
+    set_log_level("critical","STOPPED.")
     sys.exit(0)
 
 if __name__=="__main__":
