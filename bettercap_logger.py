@@ -77,7 +77,7 @@ bettercap_process=None
 best_entries={}
 ansi_escape=re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 logger.remove()
-logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> BETTERCAP </magenta><blue>|</blue> <cyan>{message}</cyan>"
+logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> BLE </magenta><cyan>{message}</cyan>"
 
 def load_settings():
     """Load settings from configuration file"""
@@ -320,7 +320,7 @@ def start_bettercap():
         pass
         
     pty_fd = pty_master
-    set_log_level("success", "WARDRIVING")
+    set_log_level("success", "LOGGING.")
 
 def stop_bettercap():
     global bettercap_process,pty_fd,last_killed_pid,bettercap_data_fd
@@ -430,17 +430,17 @@ def monitor_gps_connection():
             g="SUCCESS"
         elif "WARNING" in l:
             if g!="WARNING":
-                set_log_level("warning","GPS INITIALIZING")
+                set_log_level("warning","SCANNING.")
                 stop_bettercap()
             g="WARNING"
         elif "ERROR" in l:
             if g!="ERROR":
-                set_log_level("error","NO GPS DEVICES")
+                set_log_level("error","NO GPS DATA.")
                 stop_bettercap()
             g="ERROR"
         elif "CRITICAL" in l:
             if g!="CRITICAL":
-                set_log_level("critical","GPS IS NOT RUNNING")
+                set_log_level("critical","GPS IS DOWN.")
                 stop_bettercap()
             g="CRITICAL"
         if g=="SUCCESS":
@@ -450,7 +450,7 @@ def monitor_gps_connection():
 def handle_exit(sig,frame):
     stop_bettercap()
     cleanup()
-    set_log_level("critical","STOPPED, KEYBOARD INTERRUPT.")
+    set_log_level("critical","STOPPED.")
     sys.exit(0)
 
 signal.signal(signal.SIGINT,handle_exit)
