@@ -82,7 +82,7 @@ log_file_path=os.path.expanduser(logging_settings["log_file_path"])
 requests_directory=os.path.expanduser(gps_settings["requests_dir"])
 os.makedirs(requests_directory,exist_ok=True)
 logger.remove()
-logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> GPS </magenta><blue>|</blue> <cyan>{message}</cyan>"
+logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> GPS </magenta><cyan>{message}</cyan>"
 logger.add(log_file_path,level=logging_settings["log_level"].upper(),format=logger_format)
 logger.add(sys.stderr,level=logging_settings["log_level"].upper(),colorize=True,format=logger_format)
 for p in [log_file_path,gps_log_path]:
@@ -266,7 +266,7 @@ def main_loop():
                         break
                     except OSError as e:
                         if e.errno==99 and UDP_IP!="0.0.0.0":
-                            set_log_level("critical",f"CONNECTION: {UDP_IP} LOST.")
+                            set_log_level("critical",f"{UDP_IP} DOWN.")
                             time.sleep(attempt_interval)
                 return
             else:
@@ -274,13 +274,13 @@ def main_loop():
                     connection_lost=True
                 continue
         except KeyboardInterrupt:
-            set_log_level("critical","CLOSING CONNECTION.")
+            set_log_level("critical","STOPPED.")
             sys.exit(0)
         except Exception as e:
-            set_log_level("critical",f"CLOSING CONNECTION: {e}")
+            set_log_level("critical",f"STOPPED: {e}")
             sys.exit(1)
         if (not connection_lost) and (stable_start_time is not None) and (time.time()-stable_start_time>=5) and (not success_flag):
-            set_log_level("success","STABLE.")
+            set_log_level("success","LOGGING.")
 
 if __name__=="__main__":
     try:
@@ -288,17 +288,17 @@ if __name__=="__main__":
             try:
                 udp_socket.bind((UDP_IP,UDP_PORT))
                 udp_socket.settimeout(SOCKET_TIMEOUT)
-                set_log_level("warning","INITIALIZING.")
+                set_log_level("warning","SCANNING.")
                 break
             except OSError as e:
                 if e.errno==99 and UDP_IP!="0.0.0.0":
-                    set_log_level("critical","CONNECTION ERROR.")
+                    set_log_level("critical","NO DEVICES.")
                     time.sleep(attempt_interval)
         while True:
             main_loop()
     except KeyboardInterrupt:
-        set_log_level("critical","CLOSING CONNECTION.")
+        set_log_level("critical","STOPPED.")
         sys.exit(0)
     except Exception as e:
-        set_log_level("critical",f"UNEXPECTED ERROR: {e}")
+        set_log_level("critical",f"STOPPED: {e}")
         sys.exit(1)
