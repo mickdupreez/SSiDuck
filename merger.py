@@ -15,6 +15,11 @@ warning_flag = False
 success_flag = False
 critical_flag = False
 
+# Add these paths after the other global variables
+merger_log_dir = os.path.join(os.getcwd(), "logs", "merger_logs")
+merger_data_path = os.path.join(merger_log_dir, "merger_data.log")
+log_file_path = os.path.join(merger_log_dir, "merger_monitor.log")
+
 def set_log_level(level, msg):
     global error_flag, warning_flag, success_flag, critical_flag
     if level == "trace":
@@ -48,12 +53,18 @@ def set_log_level(level, msg):
         warning_flag = False
         success_flag = False
 
+# Update logger configuration
 logger.remove()
-fmt = "<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGING </magenta><blue>|</blue> <cyan>{message}</cyan>"
+fmt = "<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGE </magenta><cyan>{message}</cyan>"
 logger.add(sys.stderr, level="INFO", colorize=True, format=fmt)
 
+# Clear log files at startup
+if os.path.exists(log_file_path):
+    open(log_file_path, "w").close()
+logger.add(log_file_path, level="INFO", format=fmt)
+
 def signal_handler(sig, frame):
-    set_log_level("critical", "STOPPED, KEYBOARD INTERRUPT.")
+    set_log_level("critical", "STOPPED.")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -90,6 +101,13 @@ def process_wigle_file(filepath, output_filepath, processed_macs):
                             new_devices += 1
             
             if new_devices > 0:
+                # Count total devices in the output file
+                total_devices = len(processed_macs)
+                
+                # Log to merger_data.log
+                os.makedirs(os.path.dirname(merger_data_path), exist_ok=True)
+                with open(merger_data_path, "a") as data_log:
+                    data_log.write(f"NEW DEVICES FOUND : {new_devices} SINCE LAST UPDATE. TOTAL DEVICES FOUND: {total_devices}\n")
                 set_log_level("debug", f"Added {new_devices} new devices from: {filepath}")
             return True
             
@@ -114,6 +132,13 @@ def start_new_session(processing_dir, upload_dir, current_file=None):
 
 def main():
     try:
+        # Create log directories
+        os.makedirs(merger_log_dir, exist_ok=True)
+        
+        # Clear merger_data.log at startup
+        if os.path.exists(merger_data_path):
+            open(merger_data_path, "w").close()
+        
         parser = argparse.ArgumentParser(description="Process and move wardrive data files")
         parser.add_argument("--log-dir", type=str, default="logs/wardrive_logs/", help="Directory containing wardrive logs")
         parser.add_argument("--interval", type=int, default=10, help="Status update interval in iterations")
@@ -148,7 +173,7 @@ def main():
         # Check initial state
         wigle_files = glob.glob(os.path.join(log_dir, "*.wiglecsv"))
         if not wigle_files:
-            set_log_level("error", "WAITING FOR DATA.")
+            set_log_level("error", "NO DATA.")
         
         while True:
             iteration += 1
@@ -164,27 +189,27 @@ def main():
                     processed_macs.clear()
                     last_mtime = None
                     if current_file_count >= 2:
-                        set_log_level("success", "WiFi AND BLE DATA.")
+                        set_log_level("success", "WiFi & BLE DATA.")
                     else:
                         # Check which single file we have
                         file_name = os.path.basename(wigle_files[0])
                         if "bettercap" in file_name:
-                            set_log_level("warning", "ONLY BLE DATA.")
+                            set_log_level("warning", "BLE DATA ONLY.")
                         elif "kismet" in file_name:
-                            set_log_level("warning", "ONLY WiFi DATA.")
+                            set_log_level("warning", "WiFi DATA ONLY.")
                 had_files = True
                 
                 # Log file count changes
                 if current_file_count != last_file_count:
                     if current_file_count >= 2:
-                        set_log_level("success", "WiFi AND BLE DATA.")
+                        set_log_level("success", "WiFi & BLE DATA.")
                     elif current_file_count == 1:
                         # Check which single file we have
                         file_name = os.path.basename(wigle_files[0])
                         if "bettercap" in file_name:
-                            set_log_level("warning", "ONLY BLE DATA.")
+                            set_log_level("warning", "BLE DATA ONLY.")
                         elif "kismet" in file_name:
-                            set_log_level("warning", "ONLY WiFi DATA.")
+                            set_log_level("warning", "WiFi DATA ONLY.")
                     last_file_count = current_file_count
                 
                 latest_file = max(wigle_files, key=os.path.getmtime)
@@ -199,13 +224,13 @@ def main():
                     output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
                     processed_macs.clear()
                     last_mtime = None
-                    set_log_level("error", "NONE, NO DATA.")
+                    set_log_level("error", "NO DATA.")
                 had_files = False
                 last_file_count = 0
 
             time.sleep(1)
     except KeyboardInterrupt:
-        set_log_level("critical", "STOPPED, KEYBOARD INTERRUPT.")
+        set_log_level("critical", "STOPPED.")
         sys.exit(0)
     except Exception as e:
         set_log_level("critical", f"UNEXPECTED ERROR: {e}")
