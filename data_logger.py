@@ -49,11 +49,11 @@ def set_log_level(level, msg):
         success_flag = False
 
 logger.remove()
-fmt = "<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGE </magenta><blue>|</blue> <cyan>{message}</cyan>"
+fmt = "<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> MERGING </magenta><blue>|</blue> <cyan>{message}</cyan>"
 logger.add(sys.stderr, level="INFO", colorize=True, format=fmt)
 
 def signal_handler(sig, frame):
-    set_log_level("info", "Shutdown signal received. Exiting...")
+    set_log_level("critical", "STOPPED, KEYBOARD INTERRUPT.")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -94,8 +94,8 @@ def process_wigle_file(filepath, output_filepath, processed_macs):
             return True
             
     except Exception as e:
-        set_log_level("error", f"Error processing file {filepath}: {e}")
-        return False
+        set_log_level("critical", f"CLOSING CONNECTION: {e}")
+        sys.exit(1)
 
 def start_new_session(processing_dir, upload_dir, current_file=None):
     """Start a new session by moving current file to upload and creating new one"""
@@ -113,67 +113,103 @@ def start_new_session(processing_dir, upload_dir, current_file=None):
     return os.path.join(processing_dir, output_filename)
 
 def main():
-    parser = argparse.ArgumentParser(description="Process and move wardrive data files")
-    parser.add_argument("--log-dir", type=str, default="logs/wardrive_logs/", help="Directory containing wardrive logs")
-    parser.add_argument("--interval", type=int, default=10, help="Status update interval in iterations")
-    args = parser.parse_args()
+    try:
+        parser = argparse.ArgumentParser(description="Process and move wardrive data files")
+        parser.add_argument("--log-dir", type=str, default="logs/wardrive_logs/", help="Directory containing wardrive logs")
+        parser.add_argument("--interval", type=int, default=10, help="Status update interval in iterations")
+        args = parser.parse_args()
 
-    log_dir = os.path.expanduser(args.log_dir)
-    processing_dir = os.path.join(log_dir, "processing")
-    upload_dir = os.path.join(log_dir, "uploading")
+        log_dir = os.path.expanduser(args.log_dir)
+        processing_dir = os.path.join(log_dir, "processing")
+        upload_dir = os.path.join(log_dir, "uploading")
 
-    if not os.path.isdir(processing_dir):
-        set_log_level("error", f"Processing dir '{processing_dir}' does not exist.")
-        sys.exit(1)
+        if not os.path.isdir(processing_dir):
+            set_log_level("critical", f"Processing dir '{processing_dir}' does not exist.")
+            sys.exit(1)
 
-    os.makedirs(upload_dir, exist_ok=True)
+        os.makedirs(upload_dir, exist_ok=True)
 
-    # Move any existing processing files to upload at startup
-    existing_files = glob.glob(os.path.join(processing_dir, "wardrive-*.csv"))
-    for ef in existing_files:
-        try:
-            shutil.move(ef, upload_dir)
-        except Exception as e:
-            set_log_level("error", f"Failed to move existing file {ef}: {e}")
+        # Move any existing processing files to upload at startup
+        existing_files = glob.glob(os.path.join(processing_dir, "wardrive-*.csv"))
+        for ef in existing_files:
+            try:
+                shutil.move(ef, upload_dir)
+            except Exception as e:
+                set_log_level("critical", f"Failed to move existing file {ef}: {e}")
+                sys.exit(1)
 
-    output_filepath = start_new_session(processing_dir, upload_dir)
-    last_mtime = None
-    iteration = 0
-    processed_macs = set()
-    had_files = False
-    
-    while True:
-        iteration += 1
+        output_filepath = start_new_session(processing_dir, upload_dir)
+        last_mtime = None
+        iteration = 0
+        processed_macs = set()
+        had_files = False
+        last_file_count = 0
         
-        # Look for wigle files
+        # Check initial state
         wigle_files = glob.glob(os.path.join(log_dir, "*.wiglecsv"))
+        if not wigle_files:
+            set_log_level("error", "WAITING FOR DATA.")
         
-        # Handle session transitions
-        if wigle_files:
-            if not had_files:  # No files before, but now we have some - start new session
-                output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
-                processed_macs.clear()
-                last_mtime = None
-            had_files = True
+        while True:
+            iteration += 1
             
-            latest_file = max(wigle_files, key=os.path.getmtime)
-            current_mtime = os.path.getmtime(latest_file)
+            # Look for wigle files
+            wigle_files = glob.glob(os.path.join(log_dir, "*.wiglecsv"))
+            current_file_count = len(wigle_files)
             
-            # Only process if the file has been modified
-            if current_mtime != last_mtime:
-                if process_wigle_file(latest_file, output_filepath, processed_macs):
-                    last_mtime = current_mtime
-                    
-                    if iteration % args.interval == 0:
-                        set_log_level("info", f"Iteration #{iteration}: {len(processed_macs)} total devices")
-        else:
-            if had_files:  # Had files before, but now none - end session
-                output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
-                processed_macs.clear()
-                last_mtime = None
-            had_files = False
+            # Handle session transitions
+            if wigle_files:
+                if not had_files:  # No files before, but now we have some - start new session
+                    output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
+                    processed_macs.clear()
+                    last_mtime = None
+                    if current_file_count >= 2:
+                        set_log_level("success", "WiFi AND BLE DATA.")
+                    else:
+                        # Check which single file we have
+                        file_name = os.path.basename(wigle_files[0])
+                        if "bettercap" in file_name:
+                            set_log_level("warning", "ONLY BLE DATA.")
+                        elif "kismet" in file_name:
+                            set_log_level("warning", "ONLY WiFi DATA.")
+                had_files = True
+                
+                # Log file count changes
+                if current_file_count != last_file_count:
+                    if current_file_count >= 2:
+                        set_log_level("success", "WiFi AND BLE DATA.")
+                    elif current_file_count == 1:
+                        # Check which single file we have
+                        file_name = os.path.basename(wigle_files[0])
+                        if "bettercap" in file_name:
+                            set_log_level("warning", "ONLY BLE DATA.")
+                        elif "kismet" in file_name:
+                            set_log_level("warning", "ONLY WiFi DATA.")
+                    last_file_count = current_file_count
+                
+                latest_file = max(wigle_files, key=os.path.getmtime)
+                current_mtime = os.path.getmtime(latest_file)
+                
+                # Only process if the file has been modified
+                if current_mtime != last_mtime:
+                    if process_wigle_file(latest_file, output_filepath, processed_macs):
+                        last_mtime = current_mtime
+            else:
+                if had_files:  # Had files before, but now none - end session
+                    output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
+                    processed_macs.clear()
+                    last_mtime = None
+                    set_log_level("error", "NONE, NO DATA.")
+                had_files = False
+                last_file_count = 0
 
-        time.sleep(1)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        set_log_level("critical", "STOPPED, KEYBOARD INTERRUPT.")
+        sys.exit(0)
+    except Exception as e:
+        set_log_level("critical", f"UNEXPECTED ERROR: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
