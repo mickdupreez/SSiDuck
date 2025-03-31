@@ -79,22 +79,33 @@ ansi_escape=re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 logger.remove()
 logger_format="<yellow>{time:DD/MM @ HH:mm:ss.SSS} </yellow><blue>|</blue><level>{level:^9}</level><blue>|</blue><magenta> BLE </magenta><cyan>{message}</cyan>"
 
-def load_settings():
-    """Load settings from configuration file"""
-    try:
-        with open(SETTINGS_FILE, 'r') as f:
-            settings = json.load(f)
-        return settings
-    except Exception as e:
-        logger.error(f"Failed to load settings: {e}")
-        return {
-            "BETTERCAP_SETTINGS": {
-                "gps_device_name": "GPS_BETTERCAP"
-            },
-            "LOGGING_SETTINGS": {
-                "log_level": "INFO"
-            }
+def load_settings(file_path="settings.json"):
+    default_settings = {
+        "BETTERCAP_SETTINGS": {
+            "gps_device_name": "GPS_BETTERCAP"
+        },
+        "LOGGING_SETTINGS": {
+            "log_level": "trace",
+            "log_to_file": True,
+            "log_to_terminal": True
         }
+    }
+    try:
+        with open(file_path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Settings file '{file_path}' missing/invalid. Creating default...")
+        try:
+            with open(file_path, "w") as f:
+                json.dump(default_settings, f, indent=2)
+            print(f"Default settings written to '{file_path}'.")
+            return default_settings
+        except Exception as e:
+            print(f"Failed to create settings file: {e}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 def kill_existing_bettercap():
     global last_killed_pid
