@@ -40,13 +40,13 @@ def create_status_icons(status_data: dict) -> str:
         return f"[black on {bg_color}]{label:^4}[/]"
     
     # Create the grid layout with adjusted spacing
-    gps = create_status_text('gps_lock', "GPS")
-    sync = create_status_text('uploading', "SYNC")
-    ble = create_status_text('ble_recon', "BLE")
-    wifi = create_status_text('wifi_recon', "WIFI")
+    gps = create_status_text('gps_lock', "GPS  ")
+    sync = create_status_text('uploading', " SYNC")
+    ble = create_status_text('ble_recon', "BLE  ")
+    wifi = create_status_text('wifi_recon', " WIFI")
     
     # Return fixed-width layout with adjusted spacing
-    return f"{wardriving_text}\n{gps}  {sync}\n{ble}  {wifi}"
+    return f"{wardriving_text}\n{gps}{sync}\n{ble}{wifi}"
 
 def launch_wardrive():
     """Launch the wardrive.py script as a subprocess."""
