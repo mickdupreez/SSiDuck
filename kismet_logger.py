@@ -46,9 +46,34 @@ def set_log_level(level,msg):
         warning_flag=False
         success_flag=False
 
-def load_settings(file_path="kismet_settings.json"):
-    with open(file_path,"r") as file:
-        return json.load(file)
+def load_settings(file_path="settings.json"):
+    default_settings = {
+        "KISMET_SETTINGS": {
+            "wlan_interface": "wlan1",
+            "gps_device_name": "GPS_KISMET"
+        },
+        "LOGGING_SETTINGS": {
+            "log_level": "trace",
+            "log_to_file": True,
+            "log_to_terminal": True
+        }
+    }
+    try:
+        with open(file_path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Settings file '{file_path}' missing/invalid. Creating default...")
+        try:
+            with open(file_path, "w") as f:
+                json.dump(default_settings, f, indent=2)
+            print(f"Default settings written to '{file_path}'.")
+            return default_settings
+        except Exception as e:
+            print(f"Failed to create settings file: {e}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 settings=load_settings()
 kismet_settings=settings["KISMET_SETTINGS"]
