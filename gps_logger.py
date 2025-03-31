@@ -47,16 +47,31 @@ def set_log_level(level,msg):
         warning_flag=False
         success_flag=False
 
-def load_settings(file_path="gps_settings.json"):
-    default_settings={"GPS_SETTINGS":{"udp_ip":"172.20.10.3","udp_port":11123},"LOGGING_SETTINGS":{"log_level":"trace"}}
+def load_settings(file_path="settings.json"):
+    default_settings = {
+        "GPS_SETTINGS": {
+            "udp_ip": "172.20.10.3",
+            "udp_port": 11123,
+            "buffer_size": 53248,
+            "socket_timeout_sec": 1,
+            "log_gps_data": True,
+            "gps_log_path": "logs/gps_logs/gps_data.log",
+            "requests_dir": "logs/gps_logs/gps_devices"
+        },
+        "LOGGING_SETTINGS": {
+            "log_level": "trace",
+            "log_to_file": True,
+            "log_to_terminal": True
+        }
+    }
     try:
-        with open(file_path,"r") as f:
+        with open(file_path, "r") as f:
             return json.load(f)
-    except (FileNotFoundError,json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError):
         print(f"Settings file '{file_path}' missing/invalid. Creating default...")
         try:
-            with open(file_path,"w") as f:
-                json.dump(default_settings,f,indent=2)
+            with open(file_path, "w") as f:
+                json.dump(default_settings, f, indent=2)
             print(f"Default settings written to '{file_path}'.")
             return default_settings
         except Exception as e:
@@ -69,13 +84,6 @@ def load_settings(file_path="gps_settings.json"):
 settings=load_settings()
 gps_settings=settings["GPS_SETTINGS"]
 logging_settings=settings["LOGGING_SETTINGS"]
-gps_settings["buffer_size"]=53248
-gps_settings["socket_timeout_sec"]=1
-gps_settings["log_gps_data"]=True
-gps_settings["gps_log_path"]=os.path.join(os.getcwd(),"logs","gps_logs","gps_data.log")
-gps_settings["requests_dir"]=os.path.join(os.getcwd(),"logs","gps_logs","gps_devices")
-logging_settings["log_to_file"]=True
-logging_settings["log_to_terminal"]=True
 logging_settings["log_file_path"]=os.path.join(os.getcwd(),"logs","gps_logs","gps_monitor.log")
 gps_log_path=os.path.expanduser(gps_settings["gps_log_path"])
 log_file_path=os.path.expanduser(logging_settings["log_file_path"])
