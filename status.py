@@ -171,6 +171,46 @@ def create_last_known_location_box(data: dict) -> str:
     
     return f"{box_top}\n{box_content1}\n{box_content2}\n{box_bottom}"
 
+def create_live_feed_box(data: dict) -> str:
+    """Create the live feed display box."""
+    # Calculate width based on the location box width
+    location_data = data.get('location', {})
+    weather_data = data.get('weather', {})
+    address = location_data.get('address', 'N/A')
+    suburb = location_data.get('suburb', 'N/A')
+    city = location_data.get('city', 'N/A')
+    state = location_data.get('state', 'N/A')
+    postcode = location_data.get('postcode', 'N/A')
+    
+    # Calculate base width from location string
+    location_length = len(f"{address}, {suburb}, {city}, {state}, {postcode}")
+    weather_string = (
+        f"TEMP: {weather_data.get('temperature', 'N/A')}, "
+        f"HUMID: {weather_data.get('humidity', 'N/A')}, "
+        f"RAIN: {weather_data.get('precipitation', 'N/A')}, "
+        f"CLOUD COVER: {weather_data.get('cloud_cover', 'N/A')}, "
+        f"WIND SPEED: {weather_data.get('wind_speed', 'N/A')}"
+    )
+    weather_length = len(weather_string)
+    
+    # Use the same width calculation as the location box
+    base_width = max(location_length, weather_length, len("LAST KNOWN LOCATION"))
+    width = base_width + 11  # Match the location box width
+    
+    # Create box parts with proper width
+    title = "LIVE FEED"
+    padding = "─" * ((width - len(title) - 2) // 2)
+    title_line = f"{padding} {title} {padding}─" if (width - len(title) - 2) % 2 != 0 else f"{padding} {title} {padding}"
+    box_top = f"[blue]╭{title_line}╮[/blue]"
+    box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
+    
+    # Create empty content lines with proper padding to match the width exactly
+    empty_space = ' ' * width  # Full width of empty space
+    content_line = f"[blue]│[/blue]{empty_space}[blue]│[/blue]"
+    content_lines = [content_line] * 8  # Create 8 empty lines
+    
+    return f"{box_top}\n" + "\n".join(content_lines) + f"\n{box_bottom}"
+
 def main():
     console = Console()
     layout = Layout()
@@ -280,10 +320,13 @@ def main():
                 # Create last known location box
                 location_box = create_last_known_location_box(data)
                 
-                # Join all boxes with location box underneath
-                combined_display = '\n'.join(combined_box) + '\n' + location_box
+                # Create live feed box with the same data to match width
+                live_feed_box = create_live_feed_box(data)
+                
+                # Join all boxes with location box and live feed box underneath
+                combined_display = '\n'.join(combined_box) + '\n' + location_box + '\n' + live_feed_box
 
-                # Format all content as a single string - remove the redundant location information
+                # Format all content as a single string
                 content = combined_display
 
                 # Update the body with stats - improved styling
