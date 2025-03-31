@@ -8,11 +8,12 @@ import math
 from datetime import datetime
 from loguru import logger
 import csv
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import geopy
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 import numpy as np
+import requests
 
 # Global flags for logging state
 error_flag = False
@@ -40,6 +41,12 @@ wardrive_cache = {
     'last_line': None,
     'timestamp': None,
     'data': None
+}
+
+# Cache for weather data
+weather_cache = {
+    'data': None,
+    'timestamp': None
 }
 
 # Cache duration in seconds (1 minute)
@@ -377,6 +384,59 @@ def get_wardrive_data() -> Dict:
     
     return {'time': '00:00:00', 'wifi_count': 0, 'ble_count': 0}
 
+def get_weather_data(lat: float, lon: float) -> Dict[str, Any]:
+    """Get weather data using Open-Meteo API."""
+    try:
+        # Open-Meteo API endpoint for current weather
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover"
+        
+        
+        # Add timeout to prevent hanging
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            current = data.get('current', {})
+            
+            # Debug log the raw response
+            
+            # Format weather data with proper Unicode characters
+            weather_data = {
+                'temperature': f"{current.get('temperature_2m', 0):.1f}°C",
+                'humidity': f"{current.get('relative_humidity_2m', 0)}%",
+                'wind_speed': f"{current.get('wind_speed_10m', 0):.1f} km/h",
+                'wind_direction': f"{current.get('wind_direction_10m', 0):.1f}°",
+                'precipitation': f"{current.get('precipitation', 0):.1f} mm",
+                'cloud_cover': f"{current.get('cloud_cover', 0)}%"
+            }
+            
+            # Log successful weather data retrieval
+            set_log_level("debug", f"Successfully retrieved weather data: {json.dumps(weather_data, indent=2, ensure_ascii=False)}")
+            return weather_data
+        else:
+            set_log_level("warning", f"Failed to get weather data: HTTP {response.status_code}")
+            set_log_level("debug", f"Response content: {response.text}")
+    except requests.Timeout:
+        set_log_level("warning", "Weather API request timed out")
+    except requests.ConnectionError:
+        set_log_level("warning", "Failed to connect to weather API - check internet connection")
+    except json.JSONDecodeError as e:
+        set_log_level("error", f"Failed to parse weather API response: {e}")
+        set_log_level("debug", f"Response content: {response.text}")
+    except Exception as e:
+        set_log_level("error", f"Failed to get weather data: {str(e)}")
+        set_log_level("debug", f"Error type: {type(e).__name__}")
+    
+    # Return default values if any error occurred
+    return {
+        'temperature': 'N/A',
+        'humidity': 'N/A',
+        'wind_speed': 'N/A',
+        'wind_direction': 'N/A',
+        'precipitation': 'N/A',
+        'cloud_cover': 'N/A'
+    }
+
 def update_stats():
     """Update statistics based on GPS data."""
     try:
@@ -431,8 +491,9 @@ def update_stats():
                 gps_data[i]['longitude']
             )
         
-        # Get current location info
+        # Get current location info and weather data
         current_location = get_location_info(gps_data[-1]['latitude'], gps_data[-1]['longitude'])
+        weather_data = get_weather_data(gps_data[-1]['latitude'], gps_data[-1]['longitude'])
         
         # Calculate statistics
         stats = analyze_gps_data(gps_data)
@@ -454,6 +515,7 @@ def update_stats():
                 'country': current_location.get('country', 'Unknown'),
                 'postcode': current_location.get('postcode', 'Unknown')
             },
+            'weather': weather_data,
             'gps': {
                 'position': f"{gps_data[-1]['latitude']:.6f}, {gps_data[-1]['longitude']:.6f}",
                 'altitude': f"{gps_data[-1]['altitude']:.1f}m",
@@ -480,10 +542,10 @@ def update_stats():
         open(stats_log_path, "w").close()
         
         # Write to stats log with pretty formatting
-        with open(stats_log_path, 'a') as f:
-            f.write(json.dumps(output, indent=2) + '\n')
+        with open(stats_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(output, indent=2, ensure_ascii=False) + '\n')
             
-        set_log_level("success", f"Updated stats: {stats['total_distance']:.2f}m, {stats['avg_speed']:.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}")
+        set_log_level("success", f"Updated stats: {stats['total_distance']:.2f}m, {stats['avg_speed']:.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
             
     except Exception as e:
         set_log_level("error", f"Failed to update stats: {e}")
@@ -511,6 +573,8 @@ def main():
     wardrive_cache['last_line'] = None
     wardrive_cache['timestamp'] = None
     wardrive_cache['data'] = None
+    weather_cache['data'] = None
+    weather_cache['timestamp'] = None
     
     # Configure logger
     logger.remove()
@@ -599,12 +663,16 @@ def main():
             # Update stats if data has changed or API interval has passed
             if data_changed or current_time - last_api_update >= api_update_interval:
                 try:
-                    # Get location info only if API interval has passed
+                    # Get location info and weather data only if API interval has passed
                     if current_time - last_api_update >= api_update_interval:
                         current_location = get_location_info(current_gps_data['latitude'], current_gps_data['longitude'])
+                        weather_data = get_weather_data(current_gps_data['latitude'], current_gps_data['longitude'])
+                        # Cache the weather data
+                        weather_cache['data'] = weather_data
+                        weather_cache['timestamp'] = current_time
                         last_api_update = current_time
                     else:
-                        # Use cached location data
+                        # Use cached location and weather data
                         current_location = location_cache.get('data', {
                             'road': 'Unknown',
                             'house_number': '',
@@ -613,6 +681,14 @@ def main():
                             'state': 'Unknown',
                             'country': 'Unknown',
                             'postcode': 'Unknown'
+                        })
+                        weather_data = weather_cache.get('data', {
+                            'temperature': 'N/A',
+                            'humidity': 'N/A',
+                            'wind_speed': 'N/A',
+                            'wind_direction': 'N/A',
+                            'precipitation': 'N/A',
+                            'cloud_cover': 'N/A'
                         })
                     
                     # Prepare output
@@ -626,6 +702,7 @@ def main():
                             'country': current_location.get('country', 'Unknown'),
                             'postcode': current_location.get('postcode', 'Unknown')
                         },
+                        'weather': weather_data,
                         'gps': {
                             'position': f"{current_gps_data['latitude']:.6f}, {current_gps_data['longitude']:.6f}",
                             'altitude': f"{current_gps_data['altitude']:.1f}m",
@@ -652,10 +729,10 @@ def main():
                     open(stats_log_path, "w").close()
                     
                     # Write to stats log with pretty formatting
-                    with open(stats_log_path, 'a') as f:
-                        f.write(json.dumps(output, indent=2) + '\n')
+                    with open(stats_log_path, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(output, indent=2, ensure_ascii=False) + '\n')
                     
-                    set_log_level("success", f"Updated stats: {stats.get('total_distance', 0):.2f}m, {stats.get('avg_speed', 0):.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}")
+                    set_log_level("success", f"Updated stats: {stats.get('total_distance', 0):.2f}m, {stats.get('avg_speed', 0):.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
                 except Exception as e:
                     set_log_level("error", f"Failed to update stats: {e}")
             
