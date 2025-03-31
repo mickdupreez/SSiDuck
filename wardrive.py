@@ -8,7 +8,6 @@ import json
 from loguru import logger
 from datetime import datetime
 import csv
-import math
 import glob
 
 # Global flags for logging state
@@ -24,16 +23,9 @@ log_file_path = os.path.join(wardrive_log_dir, "wardrive_monitor.log")
 
 # Add these global variables
 session_start_time = None
-last_csv_position = None
-last_position = None
-last_update_time = None
-top_speed = 0.0
-total_session_distance = 0.0
+last_csv_line_count = 0  # Track number of lines in CSV
 last_logged_wifi_count = 0
 last_logged_ble_count = 0
-last_logged_distance = 0.0
-last_logged_speed = 0.0
-last_csv_line_count = 0  # Track number of lines in CSV
 
 def set_log_level(level, msg):
     global error_flag, warning_flag, success_flag, critical_flag
@@ -68,7 +60,7 @@ def set_log_level(level, msg):
         warning_flag = False
         success_flag = False
 
-def load_settings(file_path="wardrive_settings.json"):
+def load_settings(file_path="settings.json"):
     default_settings = {
         "WARDRIVE_SETTINGS": {
             "check_interval": 5,
@@ -76,7 +68,9 @@ def load_settings(file_path="wardrive_settings.json"):
             "restart_delay": 5
         },
         "LOGGING_SETTINGS": {
-            "log_level": "INFO"
+            "log_level": "INFO",
+            "log_to_file": True,
+            "log_to_terminal": True
         }
     }
     try:
@@ -237,21 +231,9 @@ def clear_log_files():
                     except Exception as e:
                         print(f"Failed to clear {file_path}: {e}")
 
-def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth's radius in km
-    
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c  # Returns distance in kilometers
-
 def update_wardrive_data():
-    global session_start_time, last_csv_position, last_position, last_update_time, top_speed
-    global total_session_distance, last_logged_wifi_count, last_logged_ble_count
-    global last_logged_distance, last_logged_speed, last_csv_line_count
+    global session_start_time, last_csv_line_count
+    global last_logged_wifi_count, last_logged_ble_count
     
     if session_start_time is None:
         return
@@ -287,40 +269,10 @@ def update_wardrive_data():
             if not data:
                 return
                 
-            # Get latest position
-            latest = data[-1]
-            try:
-                current_pos = (float(latest['CurrentLatitude']), float(latest['CurrentLongitude']))
-                current_time = datetime.strptime(latest['FirstSeen'], '%Y-%m-%d %H:%M:%S')
-            except (ValueError, KeyError):
-                return
-                
             # Calculate session duration
             session_duration = datetime.now() - session_start_time
             hours, remainder = divmod(session_duration.seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
-            
-            # Calculate incremental distance and update total
-            incremental_distance = 0
-            if last_position is not None:
-                incremental_distance = calculate_distance(last_position[0], last_position[1],
-                                                       current_pos[0], current_pos[1])
-                total_session_distance += incremental_distance
-            
-            # Calculate current speed
-            current_speed = 0
-            if last_update_time is not None:
-                time_diff = (current_time - last_update_time).total_seconds()
-                if time_diff > 0:
-                    current_speed = (incremental_distance * 1000) / time_diff  # Convert km to m for m/s
-                    # Update top speed if current speed is higher
-                    if current_speed > top_speed:
-                        top_speed = current_speed
-            
-            # Calculate session average speed
-            session_avg_speed = 0
-            if session_duration.total_seconds() > 0:
-                session_avg_speed = (total_session_distance * 1000) / session_duration.total_seconds()
             
             # Count WiFi and BLE devices
             wifi_count = sum(1 for device in data if device.get('Type', '').upper() == 'WIFI')
@@ -329,14 +281,9 @@ def update_wardrive_data():
             # Update log
             with open(wardrive_data_path, 'a') as log:
                 log.write(f"SESSION CLOCK: {hours:02d}:{minutes:02d}:{seconds:02d} "
-                         f"DEVICES LOGGED: WIFI:{wifi_count} BLE:{ble_count} "
-                         f"DISTANCE TRAVELED: {total_session_distance:.3f} "
-                         f"AVERAGE SPEED: {session_avg_speed:.2f} "
-                         f"TOP SPEED: {top_speed:.2f}\n")
+                         f"DEVICES LOGGED: WIFI:{wifi_count} BLE:{ble_count}\n")
             
             # Update tracking variables
-            last_position = current_pos
-            last_update_time = current_time
             last_csv_line_count = current_line_count
             
     except Exception as e:
@@ -352,7 +299,9 @@ def monitor_scripts():
         "gps_logger.py": None,
         "kismet_logger.py": None,
         "bettercap_logger.py": None,
-        "merger.py": None
+        "merger.py": None,
+        "wigle_sync.py": None,
+        "stats.py": None
     }
     
     restart_counts = {script: 0 for script in scripts}
