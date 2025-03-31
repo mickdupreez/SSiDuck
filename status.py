@@ -172,8 +172,8 @@ def create_last_known_location_box(data: dict) -> str:
     return f"{box_top}\n{box_content1}\n{box_content2}\n{box_bottom}"
 
 def create_live_feed_box(data: dict) -> str:
-    """Create the live feed display box."""
-    # Calculate width based on the location box width
+    """Create the live feed display box showing latest detected devices."""
+    # Calculate width based on the location box width (keeping the same width calculation)
     location_data = data.get('location', {})
     weather_data = data.get('weather', {})
     address = location_data.get('address', 'N/A')
@@ -195,21 +195,61 @@ def create_live_feed_box(data: dict) -> str:
     
     # Use the same width calculation as the location box
     base_width = max(location_length, weather_length, len("LAST KNOWN LOCATION"))
-    width = base_width + 11  # Match the location box width
+    width = base_width + 11  # Match the width of the location box
     
-    # Create box parts with proper width
+    # Create box parts with fixed width
     title = "LIVE FEED"
     padding = "─" * ((width - len(title) - 2) // 2)
     title_line = f"{padding} {title} {padding}─" if (width - len(title) - 2) % 2 != 0 else f"{padding} {title} {padding}"
     box_top = f"[blue]╭{title_line}╮[/blue]"
     box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
     
-    # Create empty content lines with proper padding to match the width exactly
-    empty_space = ' ' * width  # Full width of empty space
-    content_line = f"[blue]│[/blue]{empty_space}[blue]│[/blue]"
-    content_lines = [content_line] * 8  # Create 8 empty lines
+    # Get the latest devices list
+    latest_devices = data.get('wardrive', {}).get('latest_devices', [])
     
-    return f"{box_top}\n" + "\n".join(content_lines) + f"\n{box_bottom}"
+    # Create content lines with devices
+    content_lines = []
+    for i in range(8):  # Always create 8 lines
+        if i < len(latest_devices):
+            device = latest_devices[i].strip()
+            
+            # Parse the device string into components
+            parts = device.split(' - ', 1)
+            if len(parts) == 2:
+                mac = parts[0]
+                rest = parts[1].split(' (', 1)
+                ssid = rest[0]
+                security = rest[1].rstrip(')')
+                
+                # Color-code each component
+                colored_device = f"[bright_yellow]{mac}[/] - "
+                if ssid == "[Hidden]":
+                    colored_device += f"[bright_black]{ssid}[/]"
+                else:
+                    colored_device += f"[bright_white]{ssid}[/]"
+                colored_device += f" [bright_green]({security})[/]"
+                
+                # Ensure the device string fits within the box width
+                device_len = len(mac) + 3 + len(ssid) + 2 + len(security) + 1  # Account for formatting
+                if device_len > width - 4:  # -4 for margins
+                    colored_device = colored_device[:(width-7)] + "..."
+                
+                # Calculate padding for perfect centering
+                padding_total = width - device_len
+                left_padding = " " * (padding_total // 2)
+                right_padding = " " * (padding_total - padding_total // 2)
+                
+                line = f"[blue]│[/blue]{left_padding}{colored_device}{right_padding}[blue]│[/blue]"
+            else:
+                # Fallback for malformed device strings
+                line = f"[blue]│[/blue]{' ' * width}[blue]│[/blue]"
+        else:
+            # Empty line with exact width
+            line = f"[blue]│[/blue]{' ' * width}[blue]│[/blue]"
+        content_lines.append(line)
+    
+    # Join all parts with exact newlines
+    return box_top + "\n" + "\n".join(content_lines) + "\n" + box_bottom
 
 def main():
     console = Console()
