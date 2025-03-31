@@ -49,12 +49,33 @@ def set_log_level(level, msg):
         warning_flag = False
         success_flag = False
 
-def load_settings(settings_path: str) -> dict:
+def load_settings(settings_path: str = "settings.json") -> dict:
+    default_settings = {
+        "WIGLE_SETTINGS": {
+            "auth_token": "",
+            "upload_url": "https://api.wigle.net/api/v2/file/upload"
+        },
+        "LOGGING_SETTINGS": {
+            "log_level": "INFO",
+            "log_to_file": True,
+            "log_to_terminal": True
+        }
+    }
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
             return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Settings file '{settings_path}' missing/invalid. Creating default...")
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(default_settings, f, indent=2)
+            print(f"Default settings written to '{settings_path}'.")
+            return default_settings
+        except Exception as e:
+            print(f"Failed to create settings file: {e}")
+            sys.exit(1)
     except Exception as e:
-        set_log_level("critical", f"Failed to load settings: {e}")
+        print(f"Unexpected error: {e}")
         sys.exit(1)
 
 def check_internet_connection(test_url: str = "http://www.google.com", timeout: int = 5) -> bool:
@@ -73,6 +94,15 @@ def count_files_in_dir(directory: str) -> int:
 
 def upload_file(file_path: str, url: str, headers: dict) -> bool:
     try:
+        # Check line count before uploading
+        with open(file_path, "r", encoding="utf-8") as f:
+            line_count = sum(1 for _ in f)
+        
+        if line_count < 50:
+            set_log_level("warning", f"Deleting small file {os.path.basename(file_path)} with {line_count} lines")
+            os.remove(file_path)
+            return False
+
         with open(file_path, "rb") as f:
             files = {"file": f}
             response = requests.post(url, files=files, headers=headers)
@@ -109,15 +139,15 @@ def main():
             sys.exit(1)
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        settings_path = os.path.join(script_dir, "wigle_settings.json")
+        settings_path = os.path.join(script_dir, "settings.json")
 
         settings = load_settings(settings_path)
 
-        auth_token = settings.get("Wiggle", {}).get("auth_token")
+        auth_token = settings.get("WIGLE_SETTINGS", {}).get("auth_token")
         if not auth_token:
             set_log_level("critical", "No auth_token found in settings")
             sys.exit(1)
-        upload_url = settings.get("Wiggle", {}).get("upload_url", "https://api.wigle.net/api/v2/file/upload")
+        upload_url = settings.get("WIGLE_SETTINGS", {}).get("upload_url", "https://api.wigle.net/api/v2/file/upload")
 
         headers = {'Authorization': 'Basic ' + auth_token}
 
