@@ -124,6 +124,7 @@ def create_stats_box(data: dict, active_time: str) -> str:
 def create_last_known_location_box(data: dict) -> str:
     """Create the last known location display box."""
     location_data = data.get('location', {})
+    weather_data = data.get('weather', {})
     address = location_data.get('address', 'N/A')
     suburb = location_data.get('suburb', 'N/A')
     city = location_data.get('city', 'N/A')
@@ -133,24 +134,42 @@ def create_last_known_location_box(data: dict) -> str:
     # Format the location string with colors for each component
     location_string = f"[cyan]{address}[/], [green]{suburb}[/], [yellow]{city}[/], [magenta]{state}[/], [red]{postcode}[/]"
     
-    # Calculate the actual display length (without markup)
-    display_length = len(f"{address}, {suburb}, {city}, {state}, {postcode}")
+    # Format weather string
+    weather_string = (
+        f"TEMP: [cyan]{weather_data.get('temperature', 'N/A')}[/], "
+        f"HUMID: [green]{weather_data.get('humidity', 'N/A')}[/], "
+        f"RAIN: [blue]{weather_data.get('precipitation', 'N/A')}[/], "
+        f"CLOUD COVER: [white]{weather_data.get('cloud_cover', 'N/A')}[/], "
+        f"WIND SPEED: [yellow]{weather_data.get('wind_speed', 'N/A')}[/]"
+    )
     
-    # Create box with fixed width plus 19 characters
+    # Calculate the actual display length (without markup)
+    location_length = len(f"{address}, {suburb}, {city}, {state}, {postcode}")
+    weather_length = len(weather_string.replace('[cyan]', '').replace('[/]', '')
+                        .replace('[green]', '').replace('[blue]', '')
+                        .replace('[white]', '').replace('[yellow]', ''))
+    
+    # Create box with fixed width plus 11 characters (original width)
     title = "LAST KNOWN LOCATION"
-    base_width = max(display_length + 4, len(title) + 4)
-    width = base_width + 19  # Add 19 characters to width
-    padding = "─" * ((width - len(title)) // 2)
-    title_line = f"{padding} {title} {padding}─" if (width - len(title)) % 2 != 0 else f"{padding} {title} {padding}"
+    base_width = max(location_length, weather_length, len(title))
+    width = base_width + 11  # Reduced from 11 to 11 to fix alignment
+    
+    # Create title line with proper centering
+    padding = "─" * ((width - len(title) - 2) // 2)  # Back to -2
+    title_line = f"{padding} {title} {padding}─"  # Added an extra ─ at the end
     
     box_top = f"[blue]╭{title_line}╮[/blue]"
-    box_bottom = f"[blue]╰{'─' * (width + 2)}╯[/blue]"
+    box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
     
-    # Center the content by calculating padding based on actual display length
-    content_padding = (width - display_length) // 2
-    box_content = f"[blue]│[/blue]{' ' * (content_padding + 2)}{location_string}{' ' * (width - content_padding - display_length)}[blue]│[/blue]"
+    # Center both lines of content
+    def center_line(content, content_length):
+        padding = (width - content_length) // 2
+        return f"[blue]│[/blue]{' ' * padding}{content}{' ' * (width - padding - content_length)}[blue]│[/blue]"
     
-    return f"{box_top}\n{box_content}\n{box_bottom}"
+    box_content1 = center_line(location_string, location_length)
+    box_content2 = center_line(weather_string, weather_length)
+    
+    return f"{box_top}\n{box_content1}\n{box_content2}\n{box_bottom}"
 
 def main():
     console = Console()
