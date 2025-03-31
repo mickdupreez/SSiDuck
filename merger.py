@@ -20,6 +20,10 @@ merger_log_dir = os.path.join(os.getcwd(), "logs", "merger_logs")
 merger_data_path = os.path.join(merger_log_dir, "merger_data.log")
 log_file_path = os.path.join(merger_log_dir, "merger_monitor.log")
 
+# Global variables for file handling
+output_filepath = None
+upload_dir = None
+
 def set_log_level(level, msg):
     global error_flag, warning_flag, success_flag, critical_flag
     if level == "trace":
@@ -64,6 +68,14 @@ if os.path.exists(log_file_path):
 logger.add(log_file_path, level="INFO", format=fmt)
 
 def signal_handler(sig, frame):
+    global output_filepath, upload_dir
+    # Move current processing file to upload if it exists
+    if output_filepath and os.path.exists(output_filepath):
+        try:
+            shutil.move(output_filepath, upload_dir)
+            set_log_level("info", "Moved current processing file to upload directory")
+        except Exception as e:
+            set_log_level("error", f"Failed to move processing file: {e}")
     set_log_level("critical", "STOPPED.")
     sys.exit(0)
 
@@ -131,6 +143,7 @@ def start_new_session(processing_dir, upload_dir, current_file=None):
     return os.path.join(processing_dir, output_filename)
 
 def main():
+    global output_filepath, upload_dir
     try:
         # Create log directories
         os.makedirs(merger_log_dir, exist_ok=True)
@@ -221,6 +234,13 @@ def main():
                         last_mtime = current_mtime
             else:
                 if had_files:  # Had files before, but now none - end session
+                    # Move current processing file to upload if it exists
+                    if output_filepath and os.path.exists(output_filepath):
+                        try:
+                            shutil.move(output_filepath, upload_dir)
+                            set_log_level("info", "Moved current processing file to upload directory")
+                        except Exception as e:
+                            set_log_level("error", f"Failed to move processing file: {e}")
                     output_filepath = start_new_session(processing_dir, upload_dir, output_filepath)
                     processed_macs.clear()
                     last_mtime = None
@@ -230,9 +250,23 @@ def main():
 
             time.sleep(1)
     except KeyboardInterrupt:
+        # Move current processing file to upload if it exists
+        if output_filepath and os.path.exists(output_filepath):
+            try:
+                shutil.move(output_filepath, upload_dir)
+                set_log_level("info", "Moved current processing file to upload directory")
+            except Exception as e:
+                set_log_level("error", f"Failed to move processing file: {e}")
         set_log_level("critical", "STOPPED.")
         sys.exit(0)
     except Exception as e:
+        # Move current processing file to upload if it exists
+        if output_filepath and os.path.exists(output_filepath):
+            try:
+                shutil.move(output_filepath, upload_dir)
+                set_log_level("info", "Moved current processing file to upload directory")
+            except Exception as e:
+                set_log_level("error", f"Failed to move processing file: {e}")
         set_log_level("critical", f"UNEXPECTED ERROR: {e}")
         sys.exit(1)
 
