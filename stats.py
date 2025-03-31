@@ -437,6 +437,63 @@ def get_weather_data(lat: float, lon: float) -> Dict[str, Any]:
         'cloud_cover': 'N/A'
     }
 
+def clean_csv_line(line: str) -> str:
+    """Clean CSV line to show only relevant device information."""
+    try:
+        parts = line.split(',')
+        if len(parts) >= 3:
+            mac = parts[0]
+            name = parts[1]
+            device_type = parts[2]
+            
+            # For BLE devices
+            if "BLE" in line:
+                return f"{mac} - {name} ({device_type})"
+            # For WiFi devices
+            else:
+                ssid = name if name else "[Hidden]"
+                auth = device_type.replace('[', '').replace(']', '')
+                return f"{mac} - {ssid} ({auth})"
+    except Exception:
+        return line
+    return line
+
+def get_latest_csv_lines() -> Dict:
+    """Get the latest lines from the most recent CSV file in the processing directory."""
+    try:
+        processing_dir = os.path.join(os.getcwd(), "logs", "wardrive_logs", "processing")
+        
+        # Get the most recent CSV file
+        csv_files = [f for f in os.listdir(processing_dir) if f.endswith('.csv')]
+        if not csv_files:
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'lines': []
+            }
+            
+        latest_csv = max([os.path.join(processing_dir, f) for f in csv_files], 
+                        key=os.path.getmtime)
+        
+        # Read the CSV file
+        with open(latest_csv, 'r') as f:
+            # Skip header lines (first 2 lines)
+            lines = f.readlines()[2:]
+            
+        # Filter out empty lines, clean them, and get the last 8 non-empty lines
+        non_empty_lines = [clean_csv_line(line.strip()) for line in lines if line.strip()]
+        last_eight = non_empty_lines[-8:] if non_empty_lines else []
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'lines': last_eight
+        }
+    except Exception as e:
+        set_log_level("error", f"Failed to read CSV file: {e}")
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'lines': []
+        }
+
 def update_stats():
     """Update statistics based on GPS data."""
     try:
@@ -504,6 +561,9 @@ def update_stats():
         # Get wardrive data
         wardrive_data = get_wardrive_data()
         
+        # Get the latest CSV data
+        csv_data = get_latest_csv_lines()
+        
         # Prepare output with better formatting
         output = {
             'timestamp': datetime.now().isoformat(),
@@ -533,7 +593,8 @@ def update_stats():
             'wardrive': {
                 'time': wardrive_data['time'],
                 'wifi_count': wardrive_data['wifi_count'],
-                'ble_count': wardrive_data['ble_count']
+                'ble_count': wardrive_data['ble_count'],
+                'latest_devices': csv_data['lines']
             },
             'status': script_statuses
         }
@@ -563,6 +624,9 @@ def main():
     if os.path.exists(log_file_path):
         open(log_file_path, "w").close()
     if os.path.exists(stats_log_path):
+        open(stats_log_path, "w").close()
+    else:
+        # Create stats_log_path if it doesn't exist
         open(stats_log_path, "w").close()
     
     # Clear caches at startup
@@ -691,6 +755,9 @@ def main():
                             'cloud_cover': 'N/A'
                         })
                     
+                    # Get the latest CSV data
+                    csv_data = get_latest_csv_lines()
+                    
                     # Prepare output
                     output = {
                         'timestamp': datetime.now().isoformat(),
@@ -720,10 +787,14 @@ def main():
                         'wardrive': {
                             'time': wardrive_data['time'],
                             'wifi_count': wardrive_data['wifi_count'],
-                            'ble_count': wardrive_data['ble_count']
+                            'ble_count': wardrive_data['ble_count'],
+                            'latest_devices': csv_data['lines']
                         },
                         'status': script_statuses
                     }
+                    
+                    # Ensure stats_log_path exists
+                    os.makedirs(os.path.dirname(stats_log_path), exist_ok=True)
                     
                     # Clear the stats log file before writing new data
                     open(stats_log_path, "w").close()
