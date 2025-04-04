@@ -196,7 +196,7 @@ def parse_gps_data(lines: List[str]) -> Optional[Dict]:
         
         # Extract speed and heading from RMC
         speed_knots = float(rmc_parts[7]) if rmc_parts[7] and rmc_parts[7] != '' else 0
-        speed_ms = speed_knots * 0.514444  # Convert knots to m/s
+        speed_kmh = speed_knots * 1.852  # Convert knots to km/h
         heading = float(rmc_parts[8]) if rmc_parts[8] and rmc_parts[8] != '' else 0
         
         # Extract pitch and roll from PASHR
@@ -211,7 +211,7 @@ def parse_gps_data(lines: List[str]) -> Optional[Dict]:
             'latitude': lat,
             'longitude': lon,
             'altitude': altitude,
-            'speed': speed_ms,
+            'speed': speed_kmh,
             'heading': heading,
             'pitch': pitch,
             'roll': roll,
@@ -579,14 +579,14 @@ def update_stats():
             'gps': {
                 'position': f"{gps_data[-1]['latitude']:.6f}, {gps_data[-1]['longitude']:.6f}",
                 'altitude': f"{gps_data[-1]['altitude']:.1f}m",
-                'speed': f"{gps_data[-1]['speed']:.1f}m/s",
+                'speed': f"{gps_data[-1]['speed']:.1f}km/h",
                 'heading': f"{gps_data[-1]['heading']:.1f}°",
                 'satellites': gps_data[-1]['satellites']
             },
             'stats': {
                 'distance': f"{stats['total_distance']:.2f}m",
-                'avg_speed': f"{stats['avg_speed']:.1f}m/s",
-                'max_speed': f"{stats['max_speed']:.1f}m/s",
+                'avg_speed': f"{stats['avg_speed']:.1f}km/h",
+                'max_speed': f"{stats['max_speed']:.1f}km/h",
                 'avg_altitude': f"{stats['avg_altitude']:.1f}m",
                 'satellites': stats['satellites']
             },
@@ -606,7 +606,7 @@ def update_stats():
         with open(stats_log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(output, indent=2, ensure_ascii=False) + '\n')
             
-        set_log_level("success", f"Updated stats: {stats['total_distance']:.2f}m, {stats['avg_speed']:.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
+        set_log_level("success", f"Updated stats: {stats['total_distance']:.2f}m, {stats['avg_speed']:.1f}km/h, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
             
     except Exception as e:
         set_log_level("error", f"Failed to update stats: {e}")
@@ -773,14 +773,14 @@ def main():
                         'gps': {
                             'position': f"{current_gps_data['latitude']:.6f}, {current_gps_data['longitude']:.6f}",
                             'altitude': f"{current_gps_data['altitude']:.1f}m",
-                            'speed': f"{current_gps_data['speed']:.1f}m/s",
+                            'speed': f"{current_gps_data['speed']:.1f}km/h",
                             'heading': f"{current_gps_data['heading']:.1f}°",
                             'satellites': current_gps_data['satellites']
                         },
                         'stats': {
                             'distance': f"{stats.get('total_distance', 0):.2f}m",
-                            'avg_speed': f"{stats.get('avg_speed', 0):.1f}m/s",
-                            'max_speed': f"{stats.get('max_speed', 0):.1f}m/s",
+                            'avg_speed': f"{stats.get('avg_speed', 0):.1f}km/h",
+                            'max_speed': f"{stats.get('max_speed', 0):.1f}km/h",
                             'avg_altitude': f"{stats.get('avg_altitude', 0):.1f}m",
                             'satellites': stats.get('satellites', 0)
                         },
@@ -803,7 +803,7 @@ def main():
                     with open(stats_log_path, 'a', encoding='utf-8') as f:
                         f.write(json.dumps(output, indent=2, ensure_ascii=False) + '\n')
                     
-                    set_log_level("success", f"Updated stats: {stats.get('total_distance', 0):.2f}m, {stats.get('avg_speed', 0):.1f}m/s, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
+                    set_log_level("success", f"Updated stats: {stats.get('total_distance', 0):.2f}m, {stats.get('avg_speed', 0):.1f}km/h, WIFI:{wardrive_data['wifi_count']} BLE:{wardrive_data['ble_count']}, Temp:{weather_data['temperature']}")
                 except Exception as e:
                     set_log_level("error", f"Failed to update stats: {e}")
             
