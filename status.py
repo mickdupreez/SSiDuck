@@ -1,392 +1,734 @@
-#!/usr/bin/env python
-from rich.console import Console
-from rich.live import Live
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
-from rich.table import Table
-from rich.box import SIMPLE
+#!/usr/bin/env python3
+
 import json
-import time
+import asyncio
 from pathlib import Path
+from textual.app import App, ComposeResult
+from textual.containers import Container, Vertical, Horizontal, Grid
+from textual.widgets import Static, Button
+from textual.reactive import reactive
+from textual import events
+from textual.timer import Timer
+from textual.scroll_view import ScrollView
+from textual.widgets._static import Static
+from rich.text import Text
+from rich.style import Style
+from datetime import datetime, timedelta
 import subprocess
+import psutil
 import sys
-import signal
 
-def get_status_color(status: str) -> tuple[str, str]:
-    """Get the background and text colors for a status."""
-    status = status.upper()
-    if status == "SUCCESS":
-        return "green", "white"
-    elif status == "WARNING":
-        return "yellow", "black"
-    elif status == "ERROR":
-        return "red", "white"
-    elif status == "CRITICAL":
-        return "black", "white"
-    return "white", "black"
-
-def create_status_icons(status_data: dict) -> str:
-    """Create the status display as a formatted string."""
-    # First create WARDRIVING status separately
-    wardriving_status = status_data.get('wardriving', "N/A")
-    bg_color, _ = get_status_color(wardriving_status)
-    wardriving_text = f"[black on {bg_color}]WARDRIVING[/]"
+class DataManager:
+    """Centralized data manager that reads and caches log file data."""
+    _instance = None
     
-    # Create status indicators for each item with fixed width
-    def create_status_text(key, label):
-        status = status_data.get(key, "N/A")
-        bg_color, _ = get_status_color(status)
-        return f"[black on {bg_color}]{label:^4}[/]"
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DataManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
     
-    # Create the grid layout with adjusted spacing
-    gps = create_status_text('gps_lock', "GPS  ")
-    sync = create_status_text('uploading', " SYNC")
-    ble = create_status_text('ble_recon', "BLE  ")
-    wifi = create_status_text('wifi_recon', " WIFI")
+    def __init__(self):
+        if not self._initialized:
+            self._initialized = True
+            self.data = {}
+            self.callbacks = []
+            self.update_timer = None
     
-    # Return fixed-width layout with adjusted spacing
-    return f"{wardriving_text}\n{gps}{sync}\n{ble}{wifi}"
-
-def launch_wardrive():
-    """Launch the wardrive.py script as a subprocess."""
-    try:
-        process = subprocess.Popen(
-            [sys.executable, "wardrive.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        return process
-    except Exception as e:
-        console = Console()
-        console.print(f"[red]Error launching wardrive.py: {str(e)}[/red]")
-        return None
-
-def create_stats_box(data: dict, active_time: str) -> str:
-    """Create the current stats display box."""
-    wifi_count = data.get('wardrive', {}).get('wifi_count', 0)
-    ble_count = data.get('wardrive', {}).get('ble_count', 0)
-    distance = data.get('stats', {}).get('distance', 'N/A')
-    current_speed = data.get('gps', {}).get('speed', 'N/A')
-    max_speed = data.get('stats', {}).get('max_speed', 'N/A')
-    position = data.get('gps', {}).get('position', 'N/A')
+    def start_updates(self, app):
+        """Start periodic updates of the log file data."""
+        self.update_timer = app.set_interval(0.5, self.update_data)
     
-    # Parse position into lat/lon if available
-    lat, lon = 'N/A', 'N/A'
-    if isinstance(position, str) and ',' in position:
+    def register_callback(self, callback):
+        """Register a callback to be notified when data updates."""
+        if callback not in self.callbacks:
+            self.callbacks.append(callback)
+    
+    def update_data(self) -> None:
+        """Update the cached data from the log file."""
         try:
-            lat, lon = position.split(',')
-        except:
-            pass
+            with open('logs/stats_logs/stats_data.log', 'r') as f:
+                self.data = json.load(f)
+                # Notify all registered callbacks
+                for callback in self.callbacks:
+                    callback(self.data)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.data = {}
+    
+    def get_data(self) -> dict:
+        """Get the current cached data."""
+        return self.data
 
-    # Create each line separately with fixed width formatting and colors
-    line1 = f"RUN TIME: [cyan]{active_time}[/] DEVICES FOUND:  WiFi: [green]{wifi_count:>5}[/]  BLE: [green]{ble_count:>5}[/]"
-    line2 = f"TRAVELED: [yellow]{distance:>7}[/]    SPEED: [cyan]{current_speed:>7}[/]  MAX: [red]{max_speed:>7}[/]"
-    line3 = f"GPS COORDINATES: LONGTITUDE: [magenta]{lon:>10}[/]    LATITUDE: [magenta]{lat:>10}[/]"
+def load_settings():
+    """Load settings from settings.json file."""
+    try:
+        with open('settings.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: settings.json not found. Using default settings.")
+        return {}
 
-    # Calculate the width needed for the box based on the longest line plus 15 characters
-    base_width = max(len(line1.replace('[cyan]', '').replace('[/]', '')
-                     .replace('[green]', '').replace('[yellow]', '')
-                     .replace('[red]', '').replace('[magenta]', '')),
-                 len(line2.replace('[cyan]', '').replace('[/]', '')
-                     .replace('[green]', '').replace('[yellow]', '')
-                     .replace('[red]', '').replace('[magenta]', '')),
-                 len(line3.replace('[cyan]', '').replace('[/]', '')
-                     .replace('[green]', '').replace('[yellow]', '')
-                     .replace('[red]', '').replace('[magenta]', '')))
-    width = base_width + 10  # Add 15 characters to width
+class LocationBox(Static):
+    """A box widget specifically for displaying scrolling location data."""
     
-    # Create box parts with proper width
-    title = "CURRENT STATS"
-    padding = "─" * ((width - len(title) - 2) // 2)  # Subtract 2 to account for the corners
-    title_line = f"{padding} {title} {padding}─" if (width - len(title) - 2) % 2 != 0 else f"{padding} {title} {padding}"
-    box_top = f"[blue]╭{title_line}╮[/blue]"
-    box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
+    current_offset = reactive(0)
+    content_width = reactive(0)
+    scroll_text = reactive("")
+    
+    DEFAULT_CSS = """
+    LocationBox {
+        background: transparent;
+        border: round $accent;
+        padding: 0 1;
+        margin: 0 1;
+        content-align: center middle;
+        width: 100%;
+        overflow-x: hidden;
+    }
+    """
+    
+    def __init__(self):
+        super().__init__("")
+        self.scroll_timer = None
+        self.data_manager = DataManager()
+    
+    def on_mount(self) -> None:
+        """Set up the scroll timer when the widget is mounted."""
+        self.scroll_timer = self.set_interval(0.1, self.scroll_text_content)
+        # Register for data updates instead of reading directly
+        self.data_manager.register_callback(self.handle_data_update)
+    
+    def handle_data_update(self, data: dict) -> None:
+        """Handle data updates from the DataManager."""
+        self.scroll_text = self.format_location_data(data)
+        self.content_width = len(str(self.scroll_text))
+    
+    def format_location_data(self, data: dict) -> str:
+        """Format location data with colors."""
+        location = data.get("location", {})
+        address = location.get("address", "N/A")
+        suburb = location.get("suburb", "N/A")
+        city = location.get("city", "N/A")
+        state = location.get("state", "N/A")
+        postcode = location.get("postcode", "N/A")
+        
+        text = Text()
+        text.append(address, Style(color="cyan"))
+        text.append(" | ", Style(color="white"))
+        text.append(suburb, Style(color="green"))
+        text.append(" | ", Style(color="white"))
+        text.append(city, Style(color="yellow"))
+        text.append(" | ", Style(color="white"))
+        text.append(state, Style(color="magenta"))
+        text.append(" | ", Style(color="white"))
+        text.append(postcode, Style(color="red"))
+        
+        return text
+    
+    def scroll_text_content(self) -> None:
+        """Scroll the text content horizontally."""
+        if self.content_width > self.size.width:
+            self.current_offset = (self.current_offset + 1) % self.content_width
+            self.refresh()
+    
+    def render(self) -> Text:
+        """Render the scrolling text content."""
+        if not self.scroll_text:
+            return Text("Loading...", Style(color="yellow"))
+        
+        if self.content_width <= self.size.width:
+            return self.scroll_text
+        
+        # Calculate the visible portion of the text
+        text_str = str(self.scroll_text)
+        wrapped_text = text_str + "    " + text_str
+        start_pos = self.current_offset
+        visible_text = wrapped_text[start_pos:start_pos + self.size.width]
+        
+        return Text(visible_text)
 
-    # Format each line to fill the width, accounting for the color markup in padding calculation
-    def pad_line(line):
-        clean_line = (line.replace('[cyan]', '').replace('[/]', '')
-                     .replace('[green]', '').replace('[yellow]', '')
-                     .replace('[red]', '').replace('[magenta]', ''))
-        # Calculate padding for centering
-        padding = (width - len(clean_line)) // 2
-        left_padding = ' ' * padding
-        right_padding = ' ' * (width - len(clean_line) - padding)
-        return f"[blue]│[/blue]{left_padding}{line}{right_padding}[blue]│[/blue]"
+class ButtonGrid(Vertical):
+    """A vertical layout with WARDRIVING button and 2x2 grid below."""
+    
+    # Add button state tracking
+    active_buttons = reactive(set())
+    wardrive_process = None
+    
+    # Status color mapping
+    STATUS_COLORS = {
+        "SUCCESS": "green",
+        "WARNING": "orange",
+        "ERROR": "red",
+        "CRITICAL": "transparent"
+    }
+    
+    def get_status_color(self, status):
+        """Get the color for a status, defaulting to CRITICAL color for unknown statuses."""
+        return self.STATUS_COLORS.get(status, self.STATUS_COLORS["CRITICAL"])
+    
+    # Button to status field mapping
+    BUTTON_STATUS_MAP = {
+        "wardriving-btn": "wardriving",
+        "gps-btn": "gps_lock",
+        "wifi-btn": "wifi_recon",
+        "ble-btn": "ble_recon",
+        "sync-btn": "uploading"
+    }
+    
+    DEFAULT_CSS = """
+    ButtonGrid {
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        align: center middle;
+    }
+    
+    Button {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border: solid transparent;
+        content-align: center middle;
+        text-align: center;
+        padding: 0;
+        margin: 0;
+    }
+    
+    Button:hover {
+        background: blue !important;
+        border: solid blue;
+    }
+    
+    Button.-active {
+        background: $accent !important;
+        color: $text;
+        border: solid $accent;
+    }
 
-    box_line1 = pad_line(line1)
-    box_line2 = pad_line(line2)
-    box_line3 = pad_line(line3)
+    Button:focus {
+        border: solid $accent;
+        background: transparent;
+    }
+    
+    #wardriving-container {
+        width: 100%;
+        height: auto;
+        align: center middle;
+    }
 
-    return f"{box_top}\n{box_line1}\n{box_line2}\n{box_line3}\n{box_bottom}"
+    #button-grid {
+        width: 100%;
+        height: 1fr;
+        grid-size: 2 2;
+        grid-rows: 1fr 1fr;
+        grid-columns: 1fr 1fr;
+        align: center middle;
+        background: transparent;
+    }
 
-def create_last_known_location_box(data: dict) -> str:
-    """Create the last known location display box."""
-    location_data = data.get('location', {})
-    weather_data = data.get('weather', {})
-    address = location_data.get('address', 'N/A')
-    suburb = location_data.get('suburb', 'N/A')
-    city = location_data.get('city', 'N/A')
-    state = location_data.get('state', 'N/A')
-    postcode = location_data.get('postcode', 'N/A')
-    
-    # Format the location string with colors for each component
-    location_string = f"[cyan]{address}[/], [green]{suburb}[/], [yellow]{city}[/], [magenta]{state}[/], [red]{postcode}[/]"
-    
-    # Format weather string
-    weather_string = (
-        f"TEMP: [cyan]{weather_data.get('temperature', 'N/A')}[/], "
-        f"HUMID: [green]{weather_data.get('humidity', 'N/A')}[/], "
-        f"RAIN: [blue]{weather_data.get('precipitation', 'N/A')}[/], "
-        f"CLOUD COVER: [white]{weather_data.get('cloud_cover', 'N/A')}[/], "
-        f"WIND SPEED: [yellow]{weather_data.get('wind_speed', 'N/A')}[/]"
-    )
-    
-    # Calculate the actual display length (without markup)
-    location_length = len(f"{address}, {suburb}, {city}, {state}, {postcode}")
-    weather_length = len(weather_string.replace('[cyan]', '').replace('[/]', '')
-                        .replace('[green]', '').replace('[blue]', '')
-                        .replace('[white]', '').replace('[yellow]', ''))
-    
-    # Create box with fixed width plus 11 characters (original width)
-    title = "LAST KNOWN LOCATION"
-    base_width = max(location_length, weather_length, len(title))
-    width = base_width + 11  # Reduced from 11 to 11 to fix alignment
-    
-    # Create title line with proper centering
-    padding = "─" * ((width - len(title) - 2) // 2)  # Back to -2
-    title_line = f"{padding} {title} {padding}─"  # Added an extra ─ at the end
-    
-    box_top = f"[blue]╭{title_line}╮[/blue]"
-    box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
-    
-    # Center both lines of content
-    def center_line(content, content_length):
-        padding = (width - content_length) // 2
-        return f"[blue]│[/blue]{' ' * padding}{content}{' ' * (width - padding - content_length)}[blue]│[/blue]"
-    
-    box_content1 = center_line(location_string, location_length)
-    box_content2 = center_line(weather_string, weather_length)
-    
-    return f"{box_top}\n{box_content1}\n{box_content2}\n{box_bottom}"
+    #gps-btn, #sync-btn, #ble-btn, #wifi-btn {
+        margin: 1;
+    }
+    """
 
-def create_live_feed_box(data: dict) -> str:
-    """Create the live feed display box showing latest detected devices."""
-    # Calculate width based on the location box width (keeping the same width calculation)
-    location_data = data.get('location', {})
-    weather_data = data.get('weather', {})
-    address = location_data.get('address', 'N/A')
-    suburb = location_data.get('suburb', 'N/A')
-    city = location_data.get('city', 'N/A')
-    state = location_data.get('state', 'N/A')
-    postcode = location_data.get('postcode', 'N/A')
-    
-    # Calculate base width from location string
-    location_length = len(f"{address}, {suburb}, {city}, {state}, {postcode}")
-    weather_string = (
-        f"TEMP: {weather_data.get('temperature', 'N/A')}, "
-        f"HUMID: {weather_data.get('humidity', 'N/A')}, "
-        f"RAIN: {weather_data.get('precipitation', 'N/A')}, "
-        f"CLOUD COVER: {weather_data.get('cloud_cover', 'N/A')}, "
-        f"WIND SPEED: {weather_data.get('wind_speed', 'N/A')}"
-    )
-    weather_length = len(weather_string)
-    
-    # Use the same width calculation as the location box
-    base_width = max(location_length, weather_length, len("LAST KNOWN LOCATION"))
-    width = base_width + 11  # Match the width of the location box
-    
-    # Create box parts with fixed width
-    title = "LIVE FEED"
-    padding = "─" * ((width - len(title) - 2) // 2)
-    title_line = f"{padding} {title} {padding}─" if (width - len(title) - 2) % 2 != 0 else f"{padding} {title} {padding}"
-    box_top = f"[blue]╭{title_line}╮[/blue]"
-    box_bottom = f"[blue]╰{'─' * width}╯[/blue]"
-    
-    # Get the latest devices list
-    latest_devices = data.get('wardrive', {}).get('latest_devices', [])
-    
-    # Create content lines with devices
-    content_lines = []
-    for i in range(8):  # Always create 8 lines
-        if i < len(latest_devices):
-            device = latest_devices[i].strip()
+    def __init__(self):
+        super().__init__()
+        self.data_manager = DataManager()
+
+    def compose(self) -> ComposeResult:
+        """Create the button layout."""
+        with Container(id="wardriving-container"):
+            yield Button("WARDRIVING", id="wardriving-btn")
+        
+        with Grid(id="button-grid"):
+            yield Button("GPS", id="gps-btn")
+            yield Button("SYNC", id="sync-btn")
+            yield Button("BLE", id="ble-btn")
+            yield Button("WIFI", id="wifi-btn")
+
+    def on_mount(self) -> None:
+        """Register for data updates when the widget is mounted."""
+        self.data_manager.register_callback(self.handle_data_update)
+
+    def handle_data_update(self, data: dict) -> None:
+        """Handle data updates from the DataManager."""
+        status_data = data.get('status', {})
+        
+        for button_id, status_field in self.BUTTON_STATUS_MAP.items():
+            button = self.query_one(f"#{button_id}", Button)
+            status = status_data.get(status_field, "CRITICAL")
+            color = self.get_status_color(status)
             
-            # Parse the device string into components
-            parts = device.split(' - ', 1)
-            if len(parts) == 2:
-                mac = parts[0]
-                rest = parts[1].split(' (', 1)
-                ssid = rest[0]
-                security = rest[1].rstrip(')')
-                
-                # Color-code each component
-                colored_device = f"[bright_yellow]{mac}[/] - "
-                if ssid == "[Hidden]":
-                    colored_device += f"[bright_black]{ssid}[/]"
-                else:
-                    colored_device += f"[bright_white]{ssid}[/]"
-                colored_device += f" [bright_green]({security})[/]"
-                
-                # Ensure the device string fits within the box width
-                device_len = len(mac) + 3 + len(ssid) + 2 + len(security) + 1  # Account for formatting
-                if device_len > width - 4:  # -4 for margins
-                    colored_device = colored_device[:(width-7)] + "..."
-                
-                # Calculate padding for perfect centering
-                padding_total = width - device_len
-                left_padding = " " * (padding_total // 2)
-                right_padding = " " * (padding_total - padding_total // 2)
-                
-                line = f"[blue]│[/blue]{left_padding}{colored_device}{right_padding}[blue]│[/blue]"
+            if color != "transparent":
+                button.styles.background = color
             else:
-                # Fallback for malformed device strings
-                line = f"[blue]│[/blue]{' ' * width}[blue]│[/blue]"
-        else:
-            # Empty line with exact width
-            line = f"[blue]│[/blue]{' ' * width}[blue]│[/blue]"
-        content_lines.append(line)
-    
-    # Join all parts with exact newlines
-    return box_top + "\n" + "\n".join(content_lines) + "\n" + box_bottom
+                button.styles.background = "transparent"
 
-def main():
-    console = Console()
-    layout = Layout()
-    
-    # Add timer tracking variables
-    start_time = None
-    active_time = "00:00:00"
-    
-    # Modify the layout to only use the body since status icons will be inside
-    layout.split(
-        Layout(name="body")
-    )
-
-    # Launch wardrive.py
-    wardrive_process = launch_wardrive()
-    if not wardrive_process:
-        console.print("[red]Failed to launch wardrive.py. Exiting...[/red]")
-        return
-
-    def signal_handler(signum, frame):
-        """Handle termination signals."""
-        if wardrive_process:
-            wardrive_process.terminate()
-        sys.exit(0)
-
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    with Live(layout, refresh_per_second=1, screen=True) as live:
-        while True:
+    def is_wardrive_running(self):
+        """Check if wardrive.py is running."""
+        if self.wardrive_process:
             try:
-                # Check if wardrive process is still running
-                if wardrive_process.poll() is not None:
-                    console.print("[yellow]Wardrive process stopped. Restarting...[/yellow]")
-                    wardrive_process = launch_wardrive()
-                    if not wardrive_process:
-                        console.print("[red]Failed to restart wardrive.py. Exiting...[/red]")
-                        break
+                # Check if process is still running
+                if self.wardrive_process.poll() is None:
+                    return True
+                self.wardrive_process = None
+            except:
+                self.wardrive_process = None
+        return False
 
-                # Read the monitor log to check status
-                monitor_log_path = Path("logs/wardrive_logs/wardrive_monitor.log")
-                if monitor_log_path.exists():
-                    try:
-                        with open(monitor_log_path, "r") as f:
-                            lines = f.readlines()
-                            if lines:  # Only try to get last line if file has content
-                                last_line = lines[-1]
-                                if "SUCCESS" in last_line or "WARNING" in last_line:
-                                    if start_time is None:
-                                        start_time = time.time()
-                                else:
-                                    start_time = None
-                                    active_time = "00:00:00"
-                            else:  # File is empty
-                                start_time = None
-                                active_time = "00:00:00"
-                    except Exception as e:
-                        console.print(f"[yellow]Error reading monitor log: {str(e)}[/yellow]")
-                        start_time = None
-                        active_time = "00:00:00"
-                else:
-                    start_time = None
-                    active_time = "00:00:00"
+    def stop_wardrive(self):
+        """Stop the wardrive.py process if it's running."""
+        if self.wardrive_process:
+            try:
+                # Try graceful termination first
+                self.wardrive_process.terminate()
+                try:
+                    self.wardrive_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # If graceful termination fails, force kill
+                    self.wardrive_process.kill()
+                    self.wardrive_process.wait()
+            except:
+                pass
+            finally:
+                self.wardrive_process = None
 
-                # Calculate active time if we have a start time
-                if start_time is not None:
-                    elapsed_seconds = int(time.time() - start_time)
-                    hours = elapsed_seconds // 3600
-                    minutes = (elapsed_seconds % 3600) // 60
-                    seconds = elapsed_seconds % 60
-                    active_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    def start_wardrive(self):
+        """Start the wardrive.py process."""
+        try:
+            # Get the path to wardrive.py relative to the current script
+            script_dir = Path(__file__).parent
+            wardrive_path = script_dir / "wardrive.py"
+            
+            # Start the process
+            self.wardrive_process = subprocess.Popen(
+                [sys.executable, str(wardrive_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to start wardrive.py: {e}")
+            return False
 
-                # Read the stats data
-                log_path = Path("logs/stats_logs/stats_data.log")
-                if log_path.exists():
-                    with open(log_path, "r") as f:
-                        data = json.load(f)
-                else:
-                    data = {}
+    def toggle_wardrive(self):
+        """Toggle the wardrive.py process on/off."""
+        if self.is_wardrive_running():
+            self.stop_wardrive()
+            return False
+        else:
+            return self.start_wardrive()
 
-                # Get the status icons
-                status_icons = create_status_icons(data.get('status', {}))
-                status_lines = status_icons.split('\n')
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        event.stop()
+        button_id = event.button.id
+        
+        if button_id == "wardriving-btn":
+            # Handle wardriving button specifically
+            success = self.toggle_wardrive()
+            if success:
+                self.active_buttons.add(button_id)
+                event.button.add_class("-active")
+            else:
+                self.active_buttons.discard(button_id)
+                event.button.remove_class("-active")
+        else:
+            # Handle other buttons as before
+            if button_id in self.active_buttons:
+                self.active_buttons.remove(button_id)
+                event.button.remove_class("-active")
+            else:
+                self.active_buttons.add(button_id)
+                event.button.add_class("-active")
+        
+        # Ensure focus is removed
+        self.screen.set_focus(None)
+
+class Box(Static):
+    """A custom box widget with modern styling."""
+    DEFAULT_CSS = """
+    Box {
+        background: transparent;
+        border: round $accent;
+        padding: 0 1;
+        margin: 0 1;
+        content-align: left middle;
+    }
+    """
+
+    def __init__(self, content: str, id: str | None = None):
+        super().__init__(content, id=id)
+        if id == "wardrive_status":
+            self.styles.content_align = ("center", "middle")
+            self.styles.text_align = "center"
+            self.styles.padding = (0, 1)
+            self.styles.height = 5
+
+class StatsBox(Static):
+    """A widget for displaying wardriving statistics in a 1x3 grid layout."""
+    
+    DEFAULT_CSS = """
+    StatsBox {
+        background: transparent;
+        border: round $accent;
+        padding: 0 1;
+        margin: 0 1;
+        height: 5;
+        width: 80%;
+    }
+    
+    .stats-grid {
+        grid-size: 3 1;
+        grid-columns: 1fr 1fr 1fr;
+        height: 100%;
+        padding: 0;
+    }
+    
+    .stats-column {
+        width: 100%;
+        height: 100%;
+        content-align: center middle;
+        text-align: center;
+    }
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.data_manager = DataManager()
+        self.start_time = datetime.now()
+        self.timer = None
+    
+    def compose(self) -> ComposeResult:
+        """Create the grid layout with three columns."""
+        with Grid(classes="stats-grid"):
+            yield Static("Loading...", classes="stats-column")
+            yield Static("Loading...", classes="stats-column")
+            yield Static("Loading...", classes="stats-column")
+    
+    def on_mount(self) -> None:
+        """Register for data updates when mounted and start the timer."""
+        self.data_manager.register_callback(self.handle_data_update)
+        # Update timer every second
+        self.timer = self.set_interval(1.0, self.update_timer)
+    
+    def get_elapsed_time(self) -> str:
+        """Calculate and format the elapsed time."""
+        elapsed = datetime.now() - self.start_time
+        hours = int(elapsed.total_seconds() // 3600)
+        minutes = int((elapsed.total_seconds() % 3600) // 60)
+        seconds = int(elapsed.total_seconds() % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    
+    def update_timer(self) -> None:
+        """Update the timer display."""
+        columns = self.query(".stats-column")
+        if columns and len(columns) >= 1:
+            self.update_first_column(columns[0])
+    
+    def update_first_column(self, column: Static) -> None:
+        """Update the first column with current timer and stats."""
+        wardrive_data = self.data_manager.get_data().get('wardrive', {})
+        total_devices = wardrive_data.get('wifi_count', 0) + wardrive_data.get('ble_count', 0)
+        
+        stats_data = self.data_manager.get_data().get('stats', {})
+        distance = stats_data.get('distance', '0.00m')
+        avg_speed = stats_data.get('avg_speed', '0.0km/h')
+        
+        first_column = Text()
+        first_column.append(f"{self.get_elapsed_time()}\n", Style(color="magenta"))
+        first_column.append(f"DEVICES FOUND: {total_devices}\n", Style(color="blue"))
+        first_column.append(f"{avg_speed} : {distance}", Style(color="bright_yellow"))
+        
+        column.update(first_column)
+    
+    def update_second_column(self, column: Static, data: dict) -> None:
+        """Update the second column with GPS and movement data."""
+        gps_data = data.get('gps', {})
+        stats_data = data.get('stats', {})
+        
+        # Format GPS coordinates
+        position = gps_data.get('position', 'N/A')
+        try:
+            lat, lon = position.split(', ')
+            lat = float(lat)
+            lon = float(lon)
+            coord_line = f"LON: {lat:.3f} LAT:{lon:.3f}"
+        except (ValueError, AttributeError):
+            coord_line = "LON: N/A LAT: N/A"
+        
+        # Format altitude data
+        current_alt = gps_data.get('altitude', 'N/A').replace('m', '')
+        avg_alt = stats_data.get('avg_altitude', 'N/A').replace('m', '')
+        try:
+            current_alt = float(current_alt)
+            avg_alt = float(avg_alt)
+            alt_line = f"ALT: {current_alt:.1f}m MAX: {avg_alt:.1f}m"
+        except (ValueError, AttributeError):
+            alt_line = "ALT: N/A MAX: N/A"
+        
+        # Format max speed
+        max_speed = stats_data.get('max_speed', 'N/A').replace('km/h', '')
+        try:
+            max_speed = float(max_speed)
+            speed_line = f"MAX: {max_speed:.1f}km/h"
+        except (ValueError, AttributeError):
+            speed_line = "MAX: N/A"
+        
+        second_column = Text()
+        second_column.append(f"{coord_line}\n", Style(color="yellow"))
+        second_column.append(f"{alt_line}\n", Style(color="cyan"))
+        second_column.append(speed_line, Style(color="green"))
+        
+        column.update(second_column)
+    
+    def update_third_column(self, column: Static, data: dict) -> None:
+        """Update the third column with weather data."""
+        weather_data = data.get('weather', {})
+        if not weather_data:
+            column.update("Loading...")
+            return
+            
+        # Get weather values with defaults
+        temperature = weather_data.get('temperature', 'N/A')
+        humidity = weather_data.get('humidity', 'N/A')
+        wind_speed = weather_data.get('wind_speed', 'N/A')
+        wind_direction = weather_data.get('wind_direction', 'N/A')
+        cloud_cover = weather_data.get('cloud_cover', 'N/A')
+        
+        third_column = Text()
+        third_column.append(f"TEMP: {temperature} HUM: {humidity}\n", Style(color="red"))
+        third_column.append(f"WIND: {wind_speed}:{wind_direction}\n", Style(color="magenta2"))
+        third_column.append(f"CLOUDCOVER: {cloud_cover}", Style(color="bright_white"))
+        
+        column.update(third_column)
+
+    def handle_data_update(self, data: dict) -> None:
+        """Update the display with new data."""
+        columns = self.query(".stats-column")
+        if not columns or len(columns) != 3:
+            return
+        
+        self.update_first_column(columns[0])
+        self.update_second_column(columns[1], data)
+        self.update_third_column(columns[2], data)
+
+class LiveFeedBox(Static):
+    """A box widget for displaying a live feed of latest devices with scrolling effect."""
+    
+    DEFAULT_CSS = """
+    LiveFeedBox {
+        background: transparent;
+        border: round $accent;
+        padding: 0 1;
+        margin: 0 1;
+        content-align: center middle;
+        height: 13;
+    }
+    """
+    
+    def __init__(self):
+        super().__init__("")
+        self.data_manager = DataManager()
+        self.device_history = []
+        self.max_history = 13  # Match the height of the box
+    
+    def on_mount(self) -> None:
+        """Register for data updates when the widget is mounted."""
+        self.data_manager.register_callback(self.handle_data_update)
+    
+    def parse_device_string(self, device: str) -> tuple[str, str, str]:
+        """Parse device string into MAC, name/ESSID, and security components."""
+        try:
+            # Split on first ' - ' to separate MAC from rest
+            mac, rest = device.split(' - ', 1)
+            
+            # For WiFi devices, split security info in parentheses
+            if '(' in rest and ')' in rest:
+                name, security = rest.rsplit(' (', 1)
+                security = f"({security}"  # Add back the opening parenthesis
+            else:
+                name = rest
+                security = ""
                 
-                # Create the box with fixed width and rounded corners
-                status_box = (
-                    "[blue]╭── STATUS ──╮[/blue]\n"
-                    f"[blue]│[/blue] {status_lines[0]} [blue]│[/blue]\n"
-                    f"[blue]│[/blue] {status_lines[1]} [blue]│[/blue]\n"
-                    f"[blue]│[/blue] {status_lines[2]} [blue]│[/blue]\n"
-                    "[blue]╰────────────╯[/blue]"
-                )
+            return mac.strip(), name.strip(), security.strip()
+        except ValueError:
+            return device, "", ""
+    
+    def handle_data_update(self, data: dict) -> None:
+        """Handle data updates from the DataManager."""
+        latest_devices = data.get('wardrive', {}).get('latest_devices', [])
+        
+        # Add new devices to history
+        for device in latest_devices:
+            if device not in self.device_history:
+                self.device_history.append(device)
+        
+        # Keep only the most recent devices
+        if len(self.device_history) > self.max_history:
+            self.device_history = self.device_history[-self.max_history:]
+        
+        self.refresh()
+    
+    def render(self) -> Text:
+        """Render the live feed with centered, truncated text."""
+        result = Text()
+        max_width = self.size.width - 2  # Account for padding
+        
+        # Add each device to the display
+        for i, device in enumerate(self.device_history):
+            # Parse device string into components
+            mac, name, security = self.parse_device_string(device)
+            
+            # Determine if this is a BLE or WiFi device
+            is_ble = "Apple Inc." in device or "LE" in device
+            
+            # Color MAC address based on device type
+            if is_ble:
+                result.append(mac, Style(color="bright_blue"))  # BLE MACs in bright blue
+            else:
+                result.append(mac, Style(color="bright_yellow"))  # WiFi MACs in bright yellow
+            
+            # Add separator
+            result.append(" - ", Style(color="white"))
+            
+            # Color name/ESSID
+            if "[Hidden]" in name:
+                result.append(name, Style(color="bright_red"))
+            elif is_ble:
+                result.append(name, Style(color="cyan"))  # BLE names in cyan
+            else:
+                result.append(name, Style(color="bright_green"))  # WiFi ESSIDs in bright green
+            
+            # Add security info if present
+            if security:
+                result.append(" ", Style(color="white"))
+                result.append(security, Style(color="magenta"))  # Security info in magenta
+            
+            # Add newline if not the last item
+            if i < len(self.device_history) - 1:
+                result.append("\n")
+            
+            # Check if we need to truncate
+            current_line = str(result).split('\n')[-1]
+            if len(current_line) > max_width:
+                # Remove the last line
+                result = Text('\n'.join(str(result).split('\n')[:-1]) + '\n')
+                # Add truncated version
+                truncated = current_line[:max_width-3] + "..."
+                result.append(truncated)
+        
+        return result
 
-                # Create stats box
-                stats_box = create_stats_box(data, active_time)
-                
-                # Split boxes into lines
-                status_lines = status_box.split('\n')
-                stats_lines = stats_box.split('\n')
-                
-                # Combine status and stats boxes side by side
-                combined_box = []
-                for s_line, st_line in zip(status_lines, stats_lines):
-                    combined_box.append(f"{s_line}  {st_line}")
-                
-                # Create last known location box
-                location_box = create_last_known_location_box(data)
-                
-                # Create live feed box with the same data to match width
-                live_feed_box = create_live_feed_box(data)
-                
-                # Join all boxes with location box and live feed box underneath
-                combined_display = '\n'.join(combined_box) + '\n' + location_box + '\n' + live_feed_box
+class ModernApp(App):
+    """A modern Textual application with three boxes."""
+    
+    def __init__(self):
+        super().__init__()
+        self.settings = load_settings()
+        self.ui_settings = self.settings.get('STATUS_BOXES', {})
+        self.data_manager = DataManager()
+    
+    @property
+    def CSS(self) -> str:
+        """Generate CSS dynamically based on settings."""
+        wardrive_status = self.ui_settings.get('wardrive_status', {'width': '20%', 'height': '5'})
+        current_stats = self.ui_settings.get('current_stats', {'width': '80%', 'height': '5'})
+        last_location = self.ui_settings.get('last_location', {'width': '100%', 'height': '3'})
+        live_feed = self.ui_settings.get('live_feed', {'width': '100%', 'height': '13'})
 
-                # Format all content as a single string
-                content = combined_display
+        return f"""
+        Screen {{
+            background: transparent;
+            color: $text;
+            align: center middle;
+        }}
 
-                # Update the body with stats - improved styling
-                main_panel = Panel(
-                    content,
-                    title="[bold blue]Wardrive Monitor[/bold blue]",
-                    border_style="blue",
-                    padding=(1, 2)
-                )
-                layout["body"].update(main_panel)
+        #main-container {{
+            background: transparent;
+            layout: vertical;
+            align: center middle;
+            height: 100%;
+            width: 100%;
+            padding: 1;
+        }}
 
-                time.sleep(1)
+        #top-row {{
+            layout: horizontal;
+            height: 5;
+            width: 100%;
+            align: center middle;
+        }}
 
-            except KeyboardInterrupt:
-                if wardrive_process:
-                    wardrive_process.terminate()
-                break
-            except Exception as e:
-                layout["body"].update(Panel(f"[red]Error: {str(e)}[/red]", border_style="red"))
-                time.sleep(1)
+        #wardrive_status {{
+            width: {wardrive_status['width']};
+            height: {wardrive_status['height']};
+            margin: 0 0 0 0;
+            border: round $accent;
+            background: transparent;
+            content-align: center middle;
+            padding: 0;
+        }}
+
+        ButtonGrid {{
+            padding: 0;
+            margin: 0;
+            align: center middle;
+        }}
+
+        Button {{
+            background: transparent;
+            border: none;
+            height: auto;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            color: $text;
+        }}
+
+        Button:hover {{
+            background: $accent-darken-2;
+        }}
+
+        #wardriving-btn {{
+            text-style: bold;
+        }}
+
+        #current_stats {{
+            width: {current_stats['width']};
+            height: {current_stats['height']};
+            margin: 0;
+        }}
+
+        #last_location {{
+            width: {last_location['width']};
+            height: {last_location['height']};
+            margin-top: 0;
+        }}
+
+        #live_feed {{
+            width: {live_feed['width']};
+            height: {live_feed['height']};
+            margin-top: 0;
+        }}
+        """
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app."""
+        with Container(id="main-container"):
+            with Container(id="top-row"):
+                with Container(id="wardrive_status"):
+                    yield ButtonGrid()
+                yield StatsBox()
+            yield LocationBox()
+            yield LiveFeedBox()
+
+    def on_mount(self) -> None:
+        """Set up the application when it starts."""
+        self.title = "Modern Boxes"
+        # Start the data manager's update timer
+        self.data_manager.start_updates(self)
 
 if __name__ == "__main__":
-    main() 
+    app = ModernApp()
+    app.run()
