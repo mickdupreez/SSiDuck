@@ -1,0 +1,122 @@
+{
+  "major_classes": {
+    "0": "Miscellaneous",
+    "1": "Computer",
+    "2": "Phone",
+    "3": "LAN/Network Access Point",
+    "4": "Audio/Video",
+    "5": "Peripheral",
+    "6": "Imaging",
+    "7": "Wearable",
+    "8": "Toy",
+    "9": "Health",
+    "10": "Uncategorized"
+  },
+  "minor_classes": {
+    "computer": {
+      "0": "Uncategorized",
+      "1": "Desktop",
+      "2": "Server",
+      "3": "Laptop",
+      "4": "Handheld PC/PDA",
+      "5": "Palm sized PC/PDA",
+      "6": "Wearable computer",
+      "7": "Tablet"
+    },
+    "phone": {
+      "0": "Uncategorized",
+      "1": "Cellular",
+      "2": "Cordless",
+      "3": "Smartphone",
+      "4": "Wired modem or voice gateway",
+      "5": "Common ISDN Access",
+      "6": "Sim Card Reader"
+    },
+    "av": {
+      "0": "Uncategorized",
+      "1": "Wearable Headset",
+      "2": "Hands-free",
+      "4": "Microphone",
+      "5": "Loudspeaker",
+      "6": "Headphones",
+      "7": "Portable Audio",
+      "8": "Car Audio",
+      "9": "Set-top box",
+      "10": "HiFi Audio",
+      "11": "VCR",
+      "12": "Video Camera",
+      "13": "Camcorder",
+      "14": "Video Monitor",
+      "15": "Video Display and Loudspeaker",
+      "16": "Video Conferencing",
+      "18": "Gaming/Toy",
+      "19": "Smart Speaker"
+    },
+    "peripheral": {
+      "0": "Uncategorized",
+      "1": "Keyboard",
+      "2": "Mouse",
+      "3": "Keyboard/Mouse combo",
+      "4": "Joystick",
+      "5": "Gamepad",
+      "6": "Remote control",
+      "7": "Sensing device",
+      "8": "Digitizer tablet",
+      "9": "Card Reader",
+      "10": "Digital Pen",
+      "11": "Scanner",
+      "12": "Pointer"
+    },
+    "imaging": {
+      "4": "Display",
+      "8": "Camera",
+      "16": "Scanner",
+      "32": "Printer"
+    },
+    "wearable": {
+      "1": "Wristwatch",
+      "2": "Pager",
+      "3": "Jacket",
+      "4": "Helmet",
+      "5": "Glasses",
+      "6": "Smart Ring",
+      "7": "Smart Band"
+    },
+    "toy": {
+      "1": "Robot",
+      "2": "Vehicle",
+      "3": "Doll / Action figure",
+      "4": "Controller",
+      "5": "Game",
+      "6": "Educational Toy"
+    },
+    "health": {
+      "0": "Uncategorized",
+      "1": "Blood Pressure Monitor",
+      "2": "Thermometer",
+      "3": "Weighing Scale",
+      "4": "Glucose Meter",
+      "5": "Pulse Oximeter",
+      "6": "Heart/Pulse Rate Monitor",
+      "7": "Health Data Display",
+      "8": "Step Counter",
+      "9": "Body Composition Analyzer",
+      "10": "Peak Flow Monitor",
+      "11": "Medication Monitor",
+      "12": "Knee Prosthesis",
+      "13": "Ankle Prosthesis",
+      "14": "Generic Health Manager",
+      "15": "Personal Mobility Device"
+    },
+    "lan": {
+      "0": "Fully available",
+      "8": "1-17% utilized",
+      "16": "17-33% utilized",
+      "24": "33-50% utilized",
+      "32": "50-67% utilized",
+      "40": "67-83% utilized",
+      "48": "83-99% utilized",
+      "56": "No service available"
+    }
+  }
+} 
