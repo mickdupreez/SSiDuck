@@ -14,9 +14,7 @@ class WiFiScanner:
         self.original_interface = 'wlan1'
         self.running = True
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Base path for airodump-ng output files
         self.base_path = os.path.join(script_dir, 'wifi_scan')
-        # JSON output file path
         self.json_path = os.path.join(script_dir, 'wifi_scan.json')
         print("[DEBUG] Scanner initialized")
 
@@ -42,12 +40,10 @@ class WiFiScanner:
             }
         }
         
-        # Write to temporary file first
         temp_path = f"{self.json_path}.tmp"
         try:
             with open(temp_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            # Atomic rename
             os.replace(temp_path, self.json_path)
         except Exception as e:
             print(f"Error writing JSON file: {e}")
@@ -66,10 +62,19 @@ class WiFiScanner:
             print(f"Error getting wireless interfaces: {e}")
             sys.exit(1)
 
+    def manage_network_manager(self, interface, action='stop'):
+        try:
+            if action == 'stop':
+                subprocess.run(['sudo', 'nmcli', 'device', 'set', interface, 'managed', 'no'], capture_output=True)
+            else:
+                subprocess.run(['sudo', 'nmcli', 'device', 'set', interface, 'managed', 'yes'], capture_output=True)
+        except Exception as e:
+            print(f"Error managing NetworkManager: {e}")
+
     def start_monitor_mode(self, interface):
         try:
             print(f"[DEBUG] Starting monitor mode on {interface}")
-            subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], capture_output=True)
+            self.manage_network_manager(interface, 'stop')
             subprocess.run(['sudo', 'airmon-ng', 'start', interface], capture_output=True)
             self.monitor_interface = interface + 'mon'
             self.original_interface = interface
@@ -83,7 +88,7 @@ class WiFiScanner:
             try:
                 print(f"[DEBUG] Stopping monitor mode on {self.monitor_interface}")
                 subprocess.run(['sudo', 'airmon-ng', 'stop', self.monitor_interface], capture_output=True)
-                subprocess.run(['sudo', 'service', 'NetworkManager', 'start'], capture_output=True)
+                self.manage_network_manager(self.original_interface, 'start')
                 print(f"Stopped monitor mode on {self.monitor_interface}")
             except Exception as e:
                 print(f"Error stopping monitor mode: {e}")
@@ -131,7 +136,6 @@ class WiFiScanner:
                 bssid = parts[5].strip()
                 probed = parts[6].strip().replace('\u2019', "'") if len(parts) > 6 else ""
                 
-                # Include all stations, even those not associated
                 if mac:
                     return {
                         "MAC": mac,
@@ -149,7 +153,6 @@ class WiFiScanner:
         try:
             print(f"[DEBUG] Starting airodump-ng on interface {self.monitor_interface}")
             
-            # Start airodump-ng with output to CSV file
             process = subprocess.Popen(
                 f"sudo airodump-ng {self.monitor_interface} --channel 1,2,3,4,5,6,7,8,9,10,11,12,13,36,40,44,48,149,153,157,161 --output-format csv -w {self.base_path} --write-interval 1 >/dev/null 2>&1",
                 shell=True,
@@ -170,7 +173,6 @@ class WiFiScanner:
                             networks_info = []
                             stations_info = []
                             
-                            # Parse networks and stations
                             in_stations_section = False
                             for line in lines:
                                 line = line.strip()
@@ -191,7 +193,6 @@ class WiFiScanner:
                                     if station:
                                         stations_info.append(station)
                             
-                            # Update JSON file with current data
                             self.write_json_data(networks_info, stations_info)
                                 
                 except Exception as e:
@@ -205,7 +206,6 @@ class WiFiScanner:
             print("[DEBUG] Cleaning up...")
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-                # Clean up airodump-ng generated files
                 for f in os.listdir(os.path.dirname(self.base_path)):
                     if f.startswith(os.path.basename(self.base_path)):
                         try:

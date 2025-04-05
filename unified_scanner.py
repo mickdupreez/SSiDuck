@@ -5,9 +5,11 @@ import json
 import os
 import signal
 import sys
+import time
 import bluetooth
 from datetime import datetime
 from typing import Dict, Optional, List
+import subprocess
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
@@ -24,7 +26,6 @@ class OUILookup:
         """Load OUI data from oui.txt file."""
         try:
             if not os.path.exists(self.oui_file):
-                print(f"Warning: OUI file not found at {self.oui_file}")
                 return
 
             current_oui = None
@@ -54,24 +55,20 @@ class OUILookup:
                     elif current_info:
                         line = line.strip()
                         if line and not line.startswith("(base 16)"):
-                            if len(line.split()) >= 2:  # Likely an address line
+                            if len(line.split()) >= 2:
                                 current_info["address"].append(line)
-                                # Try to extract country code (usually last line, 2 characters)
                                 if len(line.split()) >= 1 and len(line.split()[-1]) == 2:
                                     current_info["country"] = line.split()[-1]
 
-            # Add the last entry if exists
             if current_oui and current_info:
                 self.oui_dict[current_oui] = current_info
 
-            print(f"Loaded {len(self.oui_dict)} OUI entries")
         except Exception as e:
-            print(f"Error loading OUI data: {e}")
+            pass
 
     def lookup_mac(self, mac_addr: str) -> Dict[str, str]:
         """Look up manufacturer information from MAC address."""
         try:
-            # Clean up MAC address format
             oui = mac_addr.replace(":", "").replace("-", "").upper()[:6]
             
             if oui in self.oui_dict:
@@ -88,9 +85,242 @@ class OUILookup:
             "company": "Unknown",
             "address": "",
             "country": ""
-        }
+        } 
 
-class ClassicBluetoothScanner:
+class WiFiMonitor:
+    def __init__(self):
+        self.monitor_interface = None
+        self.original_interface = 'wlan1'
+        self.running = True
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.base_path = os.path.join(script_dir, 'wifi_scan')
+        self.json_path = os.path.join(script_dir, 'wifi_scan.json')
+
+    def format_auth_mode(self, privacy, cipher, authentication):
+        components = []
+        if privacy:
+            components.append(privacy)
+        if authentication:
+            components.append(authentication)
+        if cipher:
+            components.append(cipher)
+        return f"[{' '.join(components)}]"
+
+    async def write_json_data(self, networks, stations):
+        data = {
+            "Scan_Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "NETWORKS": networks,
+            "STATIONS": stations,
+            "summary": {
+                "Networks": len(networks),
+                "Stations": len(stations),
+                "Last_Updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+        }
+        
+        temp_path = f"{self.json_path}.tmp"
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(temp_path, self.json_path)
+        except Exception as e:
+            print(f"Error writing JSON file: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
+    async def get_wireless_interfaces(self):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'sudo', 'iwconfig',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.communicate()
+            return ['wlan1']
+        except Exception:
+            sys.exit(1)
+
+    async def manage_network_manager(self, interface, action='stop'):
+        try:
+            if action == 'stop':
+                proc = await asyncio.create_subprocess_exec(
+                    'sudo', 'nmcli', 'device', 'set', interface, 'managed', 'no',
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    'sudo', 'nmcli', 'device', 'set', interface, 'managed', 'yes',
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+            await proc.communicate()
+        except Exception:
+            pass
+
+    async def start_monitor_mode(self, interface):
+        try:
+            await self.manage_network_manager(interface, 'stop')
+            # Kill processes that might interfere
+            kill_proc = await asyncio.create_subprocess_exec(
+                'sudo', 'airmon-ng', 'check', 'kill',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await kill_proc.communicate()
+            
+            proc = await asyncio.create_subprocess_exec(
+                'sudo', 'airmon-ng', 'start', interface,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.communicate()
+            self.monitor_interface = interface + 'mon'
+            self.original_interface = interface
+        except Exception:
+            sys.exit(1)
+
+    async def stop_monitor_mode(self):
+        if self.monitor_interface:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    'sudo', 'airmon-ng', 'stop', self.monitor_interface,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc.communicate()
+                await self.manage_network_manager(self.original_interface, 'start')
+            except Exception:
+                pass
+
+    def parse_csv_network_info(self, line):
+        try:
+            parts = line.strip().split(',')
+            if len(parts) >= 14:
+                bssid = parts[0].strip()
+                first_seen = parts[1].strip()
+                last_seen = parts[2].strip()
+                channel = parts[3].strip()
+                speed = parts[4].strip()
+                privacy = parts[5].strip()
+                cipher = parts[6].strip()
+                authentication = parts[7].strip()
+                power = parts[8].strip()
+                beacons = parts[9].strip()
+                essid = parts[13].strip().strip('"').replace('\u2019', "'")
+                
+                if bssid and power and channel:
+                    return {
+                        "FirstSeen": first_seen,
+                        "LastSeen": last_seen,
+                        "MAC": bssid,
+                        "RSSI": power,
+                        "Channel": channel,
+                        "Speed": speed,
+                        "SSID": essid if essid else "<hidden>",
+                        "AuthMode": self.format_auth_mode(privacy, cipher, authentication),
+                        "Beacons": beacons
+                    }
+            return None
+        except Exception as e:
+            return None
+
+    def parse_csv_station_info(self, line):
+        try:
+            parts = line.strip().split(',')
+            if len(parts) >= 6:
+                mac = parts[0].strip()
+                first_seen = parts[1].strip()
+                last_seen = parts[2].strip()
+                power = parts[3].strip()
+                bssid = parts[5].strip()
+                probed = parts[6].strip().replace('\u2019', "'") if len(parts) > 6 else ""
+                
+                if mac:
+                    return {
+                        "MAC": mac,
+                        "FirstSeen": first_seen,
+                        "LastSeen": last_seen,
+                        "RSSI": power,
+                        "BSSID": "not associated" if bssid == "(not associated)" else bssid,
+                        "Probed": probed
+                    }
+            return None
+        except Exception as e:
+            return None
+
+    async def scan_networks(self):
+        try:
+            cmd = f"sudo airodump-ng {self.monitor_interface} --channel 1,2,3,4,5,6,7,8,9,10,11,12,13,36,40,44,48,149,153,157,161 --output-format csv -w {self.base_path} --write-interval 1"
+            
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            
+            csv_file_path = f"{self.base_path}-01.csv"
+            
+            while self.running:
+                try:
+                    if os.path.exists(csv_file_path):
+                        with open(csv_file_path, 'r') as f:
+                            lines = f.readlines()
+                            
+                            networks_info = []
+                            stations_info = []
+                            
+                            in_stations_section = False
+                            for line in lines:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                    
+                                if line.startswith("Station MAC"):
+                                    in_stations_section = True
+                                    continue
+                                    
+                                if not in_stations_section:
+                                    if line and not line.startswith("BSSID"):
+                                        network = self.parse_csv_network_info(line)
+                                        if network:
+                                            networks_info.append(network)
+                                else:
+                                    station = self.parse_csv_station_info(line)
+                                    if station:
+                                        stations_info.append(station)
+                            
+                            await self.write_json_data(networks_info, stations_info)
+                                
+                except Exception:
+                    pass
+                
+                await asyncio.sleep(1)
+                
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                process.terminate()
+                await process.wait()
+                for f in os.listdir(os.path.dirname(self.base_path)):
+                    if f.startswith(os.path.basename(self.base_path)):
+                        try:
+                            os.remove(os.path.join(os.path.dirname(self.base_path), f))
+                        except:
+                            pass
+            except:
+                pass
+
+    async def cleanup(self):
+        print("\nCleaning up WiFi scanner...")
+        self.running = False
+        await self.stop_monitor_mode() 
+
+class BluetoothMonitor:
     def __init__(self):
         self.devices: Dict[str, dict] = {}
         self.running = True
@@ -99,10 +329,8 @@ class ClassicBluetoothScanner:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.device_classes_file = os.path.join(self.script_dir, 'device_classes.json')
         self.device_classes = self.load_json_data(self.device_classes_file)
-        print("Classic Bluetooth scanner initialized")
 
     def load_json_data(self, file_path: str) -> dict:
-        """Load data from a JSON file."""
         try:
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
@@ -112,13 +340,10 @@ class ClassicBluetoothScanner:
         return {}
 
     def get_company_from_mac(self, mac_addr: str) -> str:
-        """Get company name from MAC address OUI."""
         return self.oui_lookup.lookup_mac(mac_addr)["company"]
 
     async def scan_devices(self):
-        """Scan for classic Bluetooth devices asynchronously."""
         try:
-            # Run the blocking discover_devices call in a separate thread without duration
             nearby_devices = await asyncio.to_thread(
                 bluetooth.discover_devices,
                 lookup_names=True,
@@ -135,18 +360,15 @@ class ClassicBluetoothScanner:
                     device_type = self.get_device_class_name(major_class, minor_class)
                     company_name = self.get_company_from_mac(addr)
                     
-                    # Get services asynchronously
                     services = await self.get_device_services(addr)
                     
                     if addr in self.devices:
-                        # Update only dynamic information for existing device
                         self.devices[addr].update({
                             "Last_Seen": current_time,
                             "Device_Name": name if name else addr.replace(":", "-"),
                             "services": services
                         })
                     else:
-                        # Add new device with complete information
                         self.devices[addr] = {
                             "BD_ADDR": addr,
                             "Device_Name": name if name else addr.replace(":", "-"),
@@ -173,13 +395,11 @@ class ClassicBluetoothScanner:
                     
         except bluetooth.BluetoothError as e:
             print(f"Classic Bluetooth scanning error: {e}")
-            await asyncio.sleep(0.1)  # Brief pause on error before retrying
+            await asyncio.sleep(0.1)
 
     async def get_device_services(self, addr: str) -> List[str]:
-        """Get available services for a classic Bluetooth device asynchronously."""
         services = []
         try:
-            # Run the blocking find_service call in a separate thread
             service_info = await asyncio.to_thread(
                 bluetooth.find_service,
                 address=addr
@@ -192,14 +412,12 @@ class ClassicBluetoothScanner:
         return services
 
     def get_device_class_name(self, major_class: int, minor_class: int) -> str:
-        """Get human-readable device class name."""
         if not self.device_classes:
             return f"Unknown ({major_class}) - Unknown ({minor_class})"
 
         major_name = self.device_classes.get("major_classes", {}).get(str(major_class), f"Unknown ({major_class})")
         minor_name = "Uncategorized"
 
-        # Map major class numbers to their corresponding minor class categories
         major_to_minor_map = {
             1: "computer",
             2: "phone",
@@ -215,14 +433,12 @@ class ClassicBluetoothScanner:
         minor_category = major_to_minor_map.get(major_class)
         if minor_category:
             if minor_category == "imaging":
-                # Imaging is a bitmap
                 minor_names = []
                 for bit, name in self.device_classes["minor_classes"]["imaging"].items():
                     if minor_class & int(bit):
                         minor_names.append(name)
                 minor_name = "/".join(minor_names) if minor_names else "Unknown"
             elif minor_category == "peripheral" and minor_class > 0:
-                # Handle keyboard/pointing device combo
                 lower_minor = minor_class & 0x0F
                 upper_minor = (minor_class >> 4) & 0x0F
                 lower_name = self.device_classes["minor_classes"]["peripheral"].get(str(lower_minor), "Unknown")
@@ -237,7 +453,7 @@ class ClassicBluetoothScanner:
 
         return f"{major_name} - {minor_name}"
 
-class EnhancedBLEScanner:
+class BLEMonitor:
     def __init__(self):
         self.devices: Dict[str, dict] = {}
         self.running = True
@@ -247,7 +463,6 @@ class EnhancedBLEScanner:
         self.service_uuids_file = os.path.join(self.script_dir, 'service_uuids.json')
         self.oui_lookup = OUILookup()
         
-        # Load lookup data
         self.company_codes = self.load_json_data(self.company_codes_file)
         self.service_uuids = self.load_json_data(self.service_uuids_file)
         
@@ -259,7 +474,6 @@ class EnhancedBLEScanner:
         }
 
     def load_json_data(self, file_path: str) -> dict:
-        """Load data from a JSON file."""
         try:
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
@@ -269,14 +483,12 @@ class EnhancedBLEScanner:
         return {}
 
     def get_company_name(self, company_code: int) -> str:
-        """Get company name from company code."""
         return self.company_codes.get(str(company_code), f"Unknown ({company_code:04x})")
 
     def get_service_name(self, uuid: str) -> str:
-        """Get standard service name from UUID."""
         uuid_short = uuid.split('-')[0].upper()
         
-        if len(uuid) == 36:  # Full UUID
+        if len(uuid) == 36:
             if "FE00" in uuid.upper():
                 return "Vendor Specific Service"
             elif "0000" in uuid.upper() and uuid.upper().endswith("-0000-1000-8000-00805F9B34FB"):
@@ -286,7 +498,6 @@ class EnhancedBLEScanner:
         return self.service_uuids.get(uuid_short, f"Unknown Service ({uuid})")
 
     def get_device_name_from_services(self, adv: AdvertisementData) -> Optional[str]:
-        """Get device name based on advertised services and manufacturer data."""
         if not adv.service_uuids and not adv.manufacturer_data:
             return None
             
@@ -348,7 +559,6 @@ class EnhancedBLEScanner:
         return device_type
 
     def update_device_info(self, device: BLEDevice, adv: AdvertisementData):
-        """Update device information with the latest scan data."""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         channel = 37
@@ -365,8 +575,8 @@ class EnhancedBLEScanner:
             mfgr_id = next(iter(adv.manufacturer_data.keys()))
             data = adv.manufacturer_data[mfgr_id]
             raw_data = data.hex()
-            company_name = manufacturer_info["company"]  # Use OUI lookup first
-            if company_name == "Unknown":  # Fall back to manufacturer ID lookup
+            company_name = manufacturer_info["company"]
+            if company_name == "Unknown":
                 company_name = self.get_company_name(mfgr_id)
             
             if mfgr_id == 76 and len(data) >= 2:
@@ -382,7 +592,7 @@ class EnhancedBLEScanner:
                 elif type_code == 0x10:
                     protocol = "AirPlay"
         else:
-            company_name = manufacturer_info["company"]  # Use OUI lookup for devices without manufacturer data
+            company_name = manufacturer_info["company"]
         
         device_info = {
             "BD_ADDR": device.address,
@@ -397,7 +607,7 @@ class EnhancedBLEScanner:
             "Type": "BLE",
             "raw_data": raw_data,
             "company_name": company_name,
-            "manufacturer_info": manufacturer_info,  # Add full manufacturer info
+            "manufacturer_info": manufacturer_info,
             "protocol": protocol,
             "services": [self.get_service_name(uuid) for uuid in adv.service_uuids] if adv.service_uuids else []
         }
@@ -405,22 +615,18 @@ class EnhancedBLEScanner:
         if device.address not in self.devices:
             self.devices[device.address] = device_info
         else:
-            # Preserve First_Seen timestamp for existing devices
             device_info["First_Seen"] = self.devices[device.address]["First_Seen"]
             self.devices[device.address] = device_info
 
     async def detection_callback(self, device: BLEDevice, advertisement_data: AdvertisementData):
-        """Callback for each device detection."""
         self.update_device_info(device, advertisement_data)
 
     async def run_scanner(self):
-        """Run the BLE scanner."""
         scanner = BleakScanner(detection_callback=self.detection_callback)
         
         while self.running:
             try:
                 await scanner.start()
-                print("BLE Scanner started. Press Ctrl+C to stop...")
                 while self.running:
                     await asyncio.sleep(1)
                 await scanner.stop()
@@ -428,57 +634,84 @@ class EnhancedBLEScanner:
                 print(f"Error during scanning: {e}")
                 await asyncio.sleep(1)
 
-    def cleanup(self, signum, frame):
-        """Cleanup handler for graceful shutdown."""
-        print("\nStopping BLE scanner...")
-        self.running = False
+    async def cleanup(self):
+        self.running = False 
 
-class EnhancedScanner:
+class DeviceMonitor:
     def __init__(self):
-        self.ble_scanner = EnhancedBLEScanner()
-        self.classic_scanner = ClassicBluetoothScanner()
+        self.wifi_scanner = WiFiMonitor()
+        self.ble_scanner = BLEMonitor()
+        self.classic_scanner = BluetoothMonitor()
         self.running = True
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.json_path = os.path.join(self.script_dir, 'bluetooth_scan.json')
-        self.all_devices = {}  # Keep track of all devices across scans
-        self._write_task = None
+        self.bluetooth_json_path = os.path.join(self.script_dir, 'bluetooth_scan.json')
+        self.wifi_json_path = os.path.join(self.script_dir, 'wifi_scan.json')
+        self.wifi_base_path = os.path.join(self.script_dir, 'wifi_scan')
+        self.all_devices = {}
         
-        # Delete existing JSON file if it exists
-        if os.path.exists(self.json_path):
+        # Clean up any existing files at startup
+        self.cleanup_files()
+
+    def cleanup_files(self):
+        """Clean up all JSON and CSV files created by the script."""
+        # List of specific files to remove
+        files_to_remove = [
+            self.bluetooth_json_path,
+            f"{self.bluetooth_json_path}.tmp",
+            self.wifi_json_path,
+            f"{self.wifi_json_path}.tmp"
+        ]
+        
+        # Remove any existing wifi scan files (both CSV and CAP files)
+        for f in os.listdir(self.script_dir):
+            if f.startswith('wifi_scan-') or f.startswith('wifi_scan.'):
+                files_to_remove.append(os.path.join(self.script_dir, f))
+        
+        files_deleted = []
+        files_failed = []
+        
+        for file_path in files_to_remove:
             try:
-                os.remove(self.json_path)
-                print(f"Deleted existing JSON file {self.json_path}")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    files_deleted.append(os.path.basename(file_path))
             except Exception as e:
-                print(f"Error deleting existing JSON file: {e}")
+                files_failed.append((os.path.basename(file_path), str(e)))
+                
+        if files_deleted:
+            print(f"\nSuccessfully cleaned up {len(files_deleted)} files:")
+            for f in files_deleted:
+                print(f"  - {f}")
+                
+        if files_failed:
+            print(f"\nFailed to clean up {len(files_failed)} files:")
+            for f, error in files_failed:
+                print(f"  - {f}: {error}")
 
     async def load_existing_devices(self):
-        """Load existing devices from JSON file if it exists."""
         try:
-            if os.path.exists(self.json_path):
-                with open(self.json_path, 'r') as f:
+            if os.path.exists(self.bluetooth_json_path):
+                with open(self.bluetooth_json_path, 'r') as f:
                     data = json.load(f)
-                    if "DEVICES" in data:
-                        for device in data["DEVICES"]:
+                    if "devices" in data:
+                        for device in data["devices"]:
                             if "BD_ADDR" in device:
                                 self.all_devices[device["BD_ADDR"]] = device
-                    print(f"Loaded {len(self.all_devices)} existing devices from {self.json_path}")
+                    print(f"Loaded {len(self.all_devices)} existing Bluetooth devices")
         except Exception as e:
             print(f"Error loading existing devices: {e}")
 
-    async def write_json_data(self):
-        """Write current device data to JSON file with thread safety."""
+    async def write_bluetooth_json_data(self):
         current_time = datetime.now()
         
         # Update BLE devices
         for addr, device in self.ble_scanner.devices.items():
             if addr in self.all_devices:
-                # Update only dynamic fields for existing devices
                 self.all_devices[addr].update({
                     "Last_Seen": device["Last_Seen"],
                     "RSSI": device["RSSI"]
                 })
             else:
-                # Create a new device entry without unwanted fields
                 filtered_device = {k: v for k, v in device.items() 
                                 if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
                 self.all_devices[addr] = filtered_device
@@ -495,16 +728,13 @@ class EnhancedScanner:
                         "minor_name": device["device_class"]["minor_name"]
                     }
                 if addr in self.all_devices:
-                    # Update only dynamic fields for existing devices
                     self.all_devices[addr].update({
                         "Last_Seen": device["Last_Seen"],
                         "services": device["services"]
                     })
-                    # Ensure Type remains "BT" for classic devices
                     if self.all_devices[addr].get("Type") != "BT":
                         self.all_devices[addr]["Type"] = "BT"
                 else:
-                    # Create a new device entry without unwanted fields
                     filtered_device = {k: v for k, v in device.items() 
                                     if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
                     filtered_device["Type"] = "BT"
@@ -513,7 +743,6 @@ class EnhancedScanner:
         # Prepare flattened data structure
         devices_list = []
         for device in self.all_devices.values():
-            # Create a flattened device entry
             flattened_device = {
                 "First_Seen": device.get("First_Seen", ""),
                 "BD_ADDR": device.get("BD_ADDR", ""),
@@ -530,10 +759,8 @@ class EnhancedScanner:
                 "device_class_minor": device.get("device_class", {}).get("minor_name", "") if "device_class" in device else "",
                 "Last_Seen": device.get("Last_Seen", "")
             }
-            
             devices_list.append(flattened_device)
 
-        # Create the final data structure
         data = {
             "scan_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
             "total_devices": len(devices_list),
@@ -542,92 +769,113 @@ class EnhancedScanner:
             "devices": devices_list
         }
         
-        # Write to temporary file first
-        temp_path = f"{self.json_path}.tmp"
+        temp_path = f"{self.bluetooth_json_path}.tmp"
         try:
             with open(temp_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            os.replace(temp_path, self.json_path)  # Atomic replace
+            os.replace(temp_path, self.bluetooth_json_path)
         except Exception as e:
-            print(f"Error writing JSON file: {e}")
+            print(f"Error writing Bluetooth JSON file: {e}")
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except:
                     pass
 
-    async def periodic_write(self):
-        """Periodically write data to JSON file."""
+    async def run_classic_scanner(self):
         while self.running:
             try:
-                await self.write_json_data()
-                await asyncio.sleep(1)  # Write every second
+                await self.classic_scanner.scan_devices()
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"Error in classic scanner: {e}")
+                await asyncio.sleep(0.1)
+
+    async def periodic_write(self):
+        while self.running:
+            try:
+                await self.write_bluetooth_json_data()
+                await asyncio.sleep(1)
             except Exception as e:
                 print(f"Error in periodic write: {e}")
                 await asyncio.sleep(1)
 
-    async def run_classic_scanner(self):
-        """Run the classic Bluetooth scanner continuously."""
-        while self.running:
-            try:
-                await self.classic_scanner.scan_devices()
-                await asyncio.sleep(0.1)  # Small delay to prevent CPU overuse
-            except Exception as e:
-                print(f"Error in classic scanner: {e}")
-                await asyncio.sleep(0.1)  # Brief pause on error before retrying
-
     async def run_scanners(self):
-        """Run both BLE and classic Bluetooth scanners concurrently."""
         try:
-            # Load existing devices first
-            await self.load_existing_devices()
+            # Clean up any existing files before starting
+            self.cleanup_files()
             
-            # Create tasks for both scanners and periodic write
+            interface = 'wlan1'
+            await self.wifi_scanner.start_monitor_mode(interface)
+            wifi_task = asyncio.create_task(self.wifi_scanner.scan_networks())
+            
+            await self.load_existing_devices()
             ble_task = asyncio.create_task(self.ble_scanner.run_scanner())
             classic_task = asyncio.create_task(self.run_classic_scanner())
             write_task = asyncio.create_task(self.periodic_write())
             
-            # Run all tasks concurrently
-            await asyncio.gather(ble_task, classic_task, write_task)
-        except Exception as e:
-            print(f"Error in scanner tasks: {e}")
-            self.cleanup(None, None)
+            await asyncio.gather(wifi_task, ble_task, classic_task, write_task)
+        except Exception:
+            await self.cleanup()
 
-    def cleanup(self, signum, frame):
-        """Cleanup handler for graceful shutdown."""
-        print("\nStopping scanners...")
+    async def cleanup(self):
+        print("\nCleaning up and stopping scanners...")
         self.running = False
+        self.wifi_scanner.running = False
         self.ble_scanner.running = False
         self.classic_scanner.running = False
         
-        # Delete the JSON file
-        if os.path.exists(self.json_path):
+        try:
+            # Give scanners time to stop gracefully
+            await asyncio.sleep(1)
+            
+            await self.wifi_scanner.cleanup()
+            await self.ble_scanner.cleanup()
+            
+            # Final cleanup of all generated files
+            self.cleanup_files()
+            print("Cleanup completed.")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            # Attempt one final file cleanup even if scanner cleanup failed
             try:
-                os.remove(self.json_path)
-                print(f"Deleted JSON file {self.json_path}")
-            except Exception as e:
-                print(f"Error deleting JSON file: {e}")
-        
-        # Delete temporary file if it exists
-        if os.path.exists(f"{self.json_path}.tmp"):
-            try:
-                os.remove(f"{self.json_path}.tmp")
-                print(f"Deleted temporary file {self.json_path}.tmp")
-            except Exception as e:
-                print(f"Error deleting temporary file: {e}")
+                self.cleanup_files()
+            except Exception as cleanup_error:
+                print(f"Final cleanup attempt failed: {cleanup_error}")
 
-def main():
-    scanner = EnhancedScanner()
-    signal.signal(signal.SIGINT, scanner.cleanup)
-    signal.signal(signal.SIGTERM, scanner.cleanup)
+async def main():
+    monitor = DeviceMonitor()
+    
+    def signal_handler(signum, frame):
+        print("\nReceived signal to terminate...")
+        asyncio.create_task(monitor.cleanup())
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        asyncio.run(scanner.run_scanners())
+        await monitor.run_scanners()
     except KeyboardInterrupt:
-        scanner.cleanup(None, None)  # Ensure cleanup runs on keyboard interrupt
+        await monitor.cleanup()
     except Exception as e:
         print(f"Error in main: {e}")
-        scanner.cleanup(None, None)  # Ensure cleanup runs on any error
+        await monitor.cleanup()
+    finally:
+        # Ensure cleanup happens even if other cleanup attempts fail
+        monitor.cleanup_files()
 
 if __name__ == "__main__":
-    main() 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt received, cleaning up...")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+    finally:
+        # Create a new monitor instance just for final cleanup
+        # in case the main instance was not properly initialized
+        try:
+            monitor = DeviceMonitor()
+            monitor.cleanup_files()
+        except Exception as e:
+            print(f"Final cleanup attempt failed: {e}") 
