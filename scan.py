@@ -735,11 +735,13 @@ class DeviceMonitor:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.logs_dir = os.path.join(self.script_dir, 'logs')
         self.scan_logs_dir = os.path.join(self.logs_dir, 'scan_logs')
+        self.gps_logs_dir = os.path.join(self.logs_dir, 'gps_logs')
+        self.gps_data_path = os.path.join(self.gps_logs_dir, 'gps_data.json')
         
         # Create scan_logs directory if it doesn't exist
         os.makedirs(self.scan_logs_dir, exist_ok=True)
         
-        self.combined_json_path = os.path.join(self.scan_logs_dir, 'device_scan.json')
+        self.combined_json_path = os.path.join(self.scan_logs_dir, 'device_data.json')
         self.wifi_base_path = os.path.join(self.scan_logs_dir, 'wifi_scan')
         self.all_devices = {}
         
@@ -793,8 +795,35 @@ class DeviceMonitor:
         except Exception as e:
             print(f"Error loading existing devices: {e}")
 
+    def get_gps_data(self):
+        """Read GPS data from the GPS data file."""
+        try:
+            if os.path.exists(self.gps_data_path):
+                with open(self.gps_data_path, 'r') as f:
+                    gps_data = json.load(f)
+                    return {
+                        "longitude": gps_data.get("longitude"),
+                        "latitude": gps_data.get("latitude"),
+                        "altitude": gps_data.get("altitude"),
+                        "speed": gps_data.get("speed"),
+                        "satellites": gps_data.get("satellites")
+                    }
+        except Exception as e:
+            print(f"Error reading GPS data: {e}")
+        
+        return {
+            "longitude": None,
+            "latitude": None,
+            "altitude": None,
+            "speed": None,
+            "satellites": None
+        }
+
     async def write_combined_json_data(self):
         current_time = datetime.now()
+        
+        # Get GPS data
+        gps_data = self.get_gps_data()
         
         # Get WiFi data
         wifi_data = await self.wifi_scanner.get_wifi_data()
@@ -802,13 +831,36 @@ class DeviceMonitor:
         # Update BLE devices
         for addr, device in self.ble_scanner.devices.items():
             if addr in self.all_devices:
-                self.all_devices[addr].update({
+                existing_device = self.all_devices[addr]
+                # Only update GPS if signal is stronger and we have valid GPS data
+                if (device["RSSI"] is not None and 
+                    gps_data["latitude"] is not None and 
+                    gps_data["longitude"] is not None and
+                    (existing_device.get("RSSI") is None or 
+                     device["RSSI"] > existing_device["RSSI"])):
+                    existing_device.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
+                existing_device.update({
                     "Last_Seen": device["Last_Seen"],
                     "RSSI": device["RSSI"]
                 })
             else:
                 filtered_device = {k: v for k, v in device.items() 
                                 if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
+                # Add GPS data for new devices if available
+                if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                    filtered_device.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
                 self.all_devices[addr] = filtered_device
 
         # Update Classic BT devices
@@ -823,22 +875,45 @@ class DeviceMonitor:
                         "minor_name": device["device_class"]["minor_name"]
                     }
                 if addr in self.all_devices:
-                    self.all_devices[addr].update({
+                    existing_device = self.all_devices[addr]
+                    # Only update GPS if signal is stronger and we have valid GPS data
+                    if (device.get("RSSI") is not None and 
+                        gps_data["latitude"] is not None and 
+                        gps_data["longitude"] is not None and
+                        (existing_device.get("RSSI") is None or 
+                         device["RSSI"] > existing_device["RSSI"])):
+                        existing_device.update({
+                            "longitude": gps_data["longitude"],
+                            "latitude": gps_data["latitude"],
+                            "altitude": gps_data["altitude"],
+                            "speed": gps_data["speed"],
+                            "satellites": gps_data["satellites"]
+                        })
+                    existing_device.update({
                         "Last_Seen": device["Last_Seen"],
                         "services": device["services"]
                     })
-                    if self.all_devices[addr].get("Type") != "BT":
-                        self.all_devices[addr]["Type"] = "BT"
+                    if existing_device.get("Type") != "BT":
+                        existing_device["Type"] = "BT"
                 else:
                     filtered_device = {k: v for k, v in device.items() 
                                     if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
                     filtered_device["Type"] = "BT"
+                    # Add GPS data for new devices if available
+                    if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                        filtered_device.update({
+                            "longitude": gps_data["longitude"],
+                            "latitude": gps_data["latitude"],
+                            "altitude": gps_data["altitude"],
+                            "speed": gps_data["speed"],
+                            "satellites": gps_data["satellites"]
+                        })
                     self.all_devices[addr] = filtered_device
 
-        # Prepare all devices list
+        # Prepare all devices list with preserved GPS data
         all_devices = []
         
-        # Add Bluetooth devices
+        # Add Bluetooth devices with their preserved GPS data
         for device in self.all_devices.values():
             flattened_device = {
                 "First_Seen": device.get("First_Seen", ""),
@@ -854,42 +929,105 @@ class DeviceMonitor:
                 "services": device.get("services", []),
                 "device_class_major": device.get("device_class", {}).get("major_name", "") if "device_class" in device else "",
                 "device_class_minor": device.get("device_class", {}).get("minor_name", "") if "device_class" in device else "",
-                "Last_Seen": device.get("Last_Seen", "")
+                "Last_Seen": device.get("Last_Seen", ""),
+                # Preserve existing GPS data
+                "longitude": device.get("longitude"),
+                "latitude": device.get("latitude"),
+                "altitude": device.get("altitude"),
+                "speed": device.get("speed"),
+                "satellites": device.get("satellites")
             }
             all_devices.append(flattened_device)
 
         # Add WiFi devices
+        wifi_devices = {}  # Keep track of previously seen WiFi devices
         for network in wifi_data["networks"]:
-            wifi_device = {
-                "First_Seen": network.get("FirstSeen", ""),
-                "Last_Seen": network.get("LastSeen", ""),
-                "MAC": network.get("MAC", ""),
-                "Device_Name": network.get("SSID", ""),
-                "Device_Type": network.get("device_type", "Unknown"),
-                "Type": "WiFi",
-                "company_name": network.get("company_name", "Unknown"),
-                "RSSI": network.get("RSSI"),
-                "Channel": network.get("Channel"),
-                "protocol": network.get("protocol", ""),
-                "capabilities": network.get("capabilities", {}),
-                "AuthMode": network.get("AuthMode", "")
-            }
-            all_devices.append(wifi_device)
+            mac = network.get("MAC", "")
+            if mac in wifi_devices:
+                existing_device = wifi_devices[mac]
+                # Only update GPS if signal is stronger and we have valid GPS data
+                if (network.get("RSSI") is not None and 
+                    gps_data["latitude"] is not None and 
+                    gps_data["longitude"] is not None and
+                    (existing_device.get("RSSI") is None or 
+                     float(network["RSSI"]) > float(existing_device["RSSI"]))):
+                    existing_device.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
+            else:
+                wifi_device = {
+                    "First_Seen": network.get("FirstSeen", ""),
+                    "Last_Seen": network.get("LastSeen", ""),
+                    "MAC": mac,
+                    "Device_Name": network.get("SSID", ""),
+                    "Device_Type": network.get("device_type", "Unknown"),
+                    "Type": "WiFi",
+                    "company_name": network.get("company_name", "Unknown"),
+                    "RSSI": network.get("RSSI"),
+                    "Channel": network.get("Channel"),
+                    "protocol": network.get("protocol", ""),
+                    "capabilities": network.get("capabilities", {}),
+                    "AuthMode": network.get("AuthMode", ""),
+                }
+                # Add GPS data for new devices if available
+                if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                    wifi_device.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
+                wifi_devices[mac] = wifi_device
+                all_devices.append(wifi_device)
 
+        # Add WiFi client devices with the same GPS preservation logic
+        wifi_clients = {}
         for station in wifi_data["stations"]:
-            station_device = {
-                "First_Seen": station.get("FirstSeen", ""),
-                "Last_Seen": station.get("LastSeen", ""),
-                "MAC": station.get("MAC", ""),
-                "Device_Name": station.get("Probed", ""),
-                "Device_Type": station.get("device_type", "Unknown"),
-                "Type": "WiFi Client",
-                "company_name": station.get("company_name", "Unknown"),
-                "RSSI": station.get("RSSI"),
-                "BSSID": station.get("BSSID", ""),
-                "probe_history": station.get("probe_history", [])
-            }
-            all_devices.append(station_device)
+            mac = station.get("MAC", "")
+            if mac in wifi_clients:
+                existing_client = wifi_clients[mac]
+                # Only update GPS if signal is stronger and we have valid GPS data
+                if (station.get("RSSI") is not None and 
+                    gps_data["latitude"] is not None and 
+                    gps_data["longitude"] is not None and
+                    (existing_client.get("RSSI") is None or 
+                     float(station["RSSI"]) > float(existing_client["RSSI"]))):
+                    existing_client.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
+            else:
+                station_device = {
+                    "First_Seen": station.get("FirstSeen", ""),
+                    "Last_Seen": station.get("LastSeen", ""),
+                    "MAC": mac,
+                    "Device_Name": station.get("Probed", ""),
+                    "Device_Type": station.get("device_type", "Unknown"),
+                    "Type": "WiFi Client",
+                    "company_name": station.get("company_name", "Unknown"),
+                    "RSSI": station.get("RSSI"),
+                    "BSSID": station.get("BSSID", ""),
+                    "probe_history": station.get("probe_history", []),
+                }
+                # Add GPS data for new devices if available
+                if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                    station_device.update({
+                        "longitude": gps_data["longitude"],
+                        "latitude": gps_data["latitude"],
+                        "altitude": gps_data["altitude"],
+                        "speed": gps_data["speed"],
+                        "satellites": gps_data["satellites"]
+                    })
+                wifi_clients[mac] = station_device
+                all_devices.append(station_device)
 
         # Combine all data with counts at top level
         data = {
