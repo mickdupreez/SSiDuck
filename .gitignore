@@ -16,7 +16,6 @@ __pycache__/
 # IDE specific files
 .vscode/
 .idea/
-.cursor/
 
 # Environment variables
 .env 

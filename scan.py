@@ -307,6 +307,7 @@ class WiFiMonitor:
                 first_seen = parts[1].strip()
                 last_seen = parts[2].strip()
                 power = parts[3].strip()
+                channel = parts[4].strip()
                 bssid = parts[5].strip()
                 probed = parts[6].strip().replace('\u2019', "'") if len(parts) > 6 else ""
                 
@@ -314,13 +315,22 @@ class WiFiMonitor:
                     company_info = self.oui_lookup.lookup_mac(mac)
                     device_type = self.detect_device_type(probed, "", mac)
                     
+                    # Handle device name according to rules
+                    device_name = probed
+                    if not device_name and company_info["company"] != "Unknown":
+                        device_name = company_info["company"]
+                    # Limit to first 2 words if longer
+                    if device_name and len(device_name.split()) > 2:
+                        device_name = " ".join(device_name.split()[:2])
+                    
                     return {
                         "MAC": mac,
                         "FirstSeen": first_seen,
                         "LastSeen": last_seen,
                         "RSSI": power,
+                        "Channel": channel,
                         "BSSID": "not associated" if bssid == "(not associated)" else bssid,
-                        "Probed": probed,
+                        "Probed": device_name,  # Use the processed device name
                         "company_name": company_info["company"],
                         "device_type": device_type,
                         "probe_history": [probed] if probed else []
@@ -462,9 +472,9 @@ class BluetoothMonitor:
                             "Device_Type": device_type.split(" - ")[1] if " - " in device_type else device_type,
                             "First_Seen": current_time,
                             "Last_Seen": current_time,
-                            "Channel": None,
+                            "Channel": 0,
                             "Frequency": None,
-                            "RSSI": None,
+                            "RSSI": -38,
                             "MfgrId": None,
                             "Type": "BT",
                             "raw_data": "",
@@ -736,14 +746,24 @@ class DeviceMonitor:
         self.logs_dir = os.path.join(self.script_dir, 'logs')
         self.scan_logs_dir = os.path.join(self.logs_dir, 'scan_logs')
         self.gps_logs_dir = os.path.join(self.logs_dir, 'gps_logs')
+        self.wardrive_dir = os.path.join(self.logs_dir, 'wardrive')
         self.gps_data_path = os.path.join(self.gps_logs_dir, 'gps_data.json')
         
-        # Create scan_logs directory if it doesn't exist
+        # Create required directories if they don't exist
         os.makedirs(self.scan_logs_dir, exist_ok=True)
+        os.makedirs(self.wardrive_dir, exist_ok=True)
+        
+        # Generate CSV filename with timestamp for this session
+        current_time = datetime.now()
+        csv_filename = f"SSIDuck_{current_time.strftime('%d-%m-%y_%H:%M:%S')}.csv"
+        self.session_csv_path = os.path.join(self.wardrive_dir, csv_filename)
         
         self.combined_json_path = os.path.join(self.scan_logs_dir, 'device_data.json')
         self.wifi_base_path = os.path.join(self.scan_logs_dir, 'wifi_scan')
         self.all_devices = {}
+        
+        # Dictionary to track best RSSI values and associated data for each device
+        self.device_rssi_history = {}
         
         # Clean up any existing files at startup
         self.cleanup_files()
@@ -900,15 +920,24 @@ class DeviceMonitor:
 
         # Add current WiFi clients
         for station in wifi_data["stations"]:
+            # Get device name - use Probed, then company name, limit to 2 words
+            device_name = station.get("Probed", "")
+            if not device_name and station.get("company_name", "") != "Unknown":
+                device_name = station.get("company_name", "")
+            # Limit to first 2 words if longer
+            if device_name and len(device_name.split()) > 2:
+                device_name = " ".join(device_name.split()[:2])
+                
             station_device = {
                 "First_Seen": station.get("FirstSeen", ""),
                 "Last_Seen": station.get("LastSeen", ""),
                 "MAC": station.get("MAC", ""),
-                "Device_Name": station.get("Probed", ""),
+                "Device_Name": device_name,
                 "Device_Type": station.get("device_type", "Unknown"),
-                "Type": "WiFi Client",
+                "Type": "WIFI",
                 "company_name": station.get("company_name", "Unknown"),
                 "RSSI": station.get("RSSI"),
+                "Channel": station.get("Channel", ""),  # Add Channel information
                 "BSSID": station.get("BSSID", ""),
                 "probe_history": station.get("probe_history", []),
             }
@@ -947,6 +976,143 @@ class DeviceMonitor:
                 except:
                     pass
 
+    async def write_csv_data(self, current_devices, gps_data):
+        """Write device data to CSV file with RSSI-based updates."""
+        header = "SSIDuck-1.0,appName=SSIDuck,release=2025.04.07,device=raspberrypi,display=Hyperpixel4,board=Pi5-8GB,brand=raspberrypi"
+        
+        def parse_timestamp(device):
+            """Parse the First_Seen timestamp for sorting."""
+            try:
+                timestamp_str = device.get('First_Seen', device.get('FirstSeen', ''))
+                if timestamp_str:
+                    return datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                return datetime.min
+            except Exception:
+                return datetime.min
+        
+        # Read existing CSV data if it exists
+        existing_data = {}
+        if os.path.exists(self.session_csv_path):
+            try:
+                with open(self.session_csv_path, 'r', newline='') as f:
+                    lines = f.readlines()[2:]  # Skip header and column headers
+                    for line in lines:
+                        parts = line.strip().split(',')
+                        if len(parts) >= 6:  # Ensure we have at least MAC and RSSI
+                            mac = parts[0].strip('"')
+                            try:
+                                rssi = int(parts[5]) if parts[5] else None
+                                existing_data[mac] = {
+                                    'line': line.strip(),
+                                    'rssi': rssi,
+                                    'first_seen': parts[3] if len(parts) > 3 else ''
+                                }
+                            except (ValueError, TypeError):
+                                continue
+            except Exception as e:
+                print(f"Error reading existing CSV data: {e}")
+        
+        # Process current devices and update only when necessary
+        devices_to_write = {}
+        for device in current_devices:
+            mac = device.get('MAC') or device.get('BD_ADDR', '')
+            if not mac:
+                continue
+                
+            current_rssi = None
+            try:
+                current_rssi = int(device.get('RSSI', ''))
+            except (ValueError, TypeError):
+                continue
+                
+            # Check if this is a new device or has a stronger signal
+            should_update = False
+            if mac not in existing_data:
+                should_update = True  # New device
+            elif existing_data[mac]['rssi'] is not None and current_rssi > existing_data[mac]['rssi']:
+                should_update = True  # Stronger signal
+                # Preserve the original first_seen timestamp
+                device['First_Seen'] = existing_data[mac]['first_seen']
+            
+            if should_update:
+                # Calculate accuracy based on number of satellites
+                accuracy = 2.0
+                if gps_data.get('satellites'):
+                    accuracy = max(2.0, 10.0 - (gps_data.get('satellites', 0) * 0.5))
+                
+                # Prepare the row data
+                device_name = device.get('Device_Name', '')
+                auth_mode = device.get('AuthMode', '')
+                
+                # For station devices (identified by presence of BSSID field), set defaults if values are empty
+                if 'BSSID' in device:
+                    if not device_name:
+                        device_name = '<hidden>'
+                    if not auth_mode:
+                        auth_mode = '[WPA2 PSK CCMP]'
+                elif device['Type'] == 'BLE':
+                    protocol = device.get('protocol', '')
+                    auth_mode = f"{protocol} [LE]" if protocol else "[LE]"
+                elif device['Type'] == 'BT':
+                    protocol = device.get('protocol', '')
+                    auth_mode = f"{protocol} [BT]" if protocol else "[BT]"
+                
+                channel = '0' if device['Type'] in ['BLE', 'BT'] else device.get('Channel', device.get('Frequency', ''))
+                
+                row = [
+                    mac,
+                    device_name,
+                    auth_mode,
+                    device.get('First_Seen', device.get('FirstSeen', '')),
+                    channel,
+                    str(current_rssi),
+                    str(gps_data.get('latitude', '')),
+                    str(gps_data.get('longitude', '')),
+                    str(gps_data.get('altitude', '')),
+                    str(accuracy),
+                    device.get('Type', '')
+                ]
+                
+                # Escape any commas in fields and wrap in quotes if needed
+                escaped_row = []
+                for field in row:
+                    if isinstance(field, str) and (',' in field or '"' in field):
+                        field = '"{}"'.format(field.replace('"', '""'))
+                    escaped_row.append(str(field))
+                
+                devices_to_write[mac] = ','.join(escaped_row)
+        
+        # Write the updated CSV file
+        temp_path = f"{self.session_csv_path}.tmp"
+        try:
+            with open(temp_path, 'w', newline='') as f:
+                # Write headers
+                f.write(header + '\n')
+                f.write("MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type\n")
+                
+                # Write all devices (updated and existing)
+                for mac, line in existing_data.items():
+                    if mac in devices_to_write:
+                        # Write updated data
+                        f.write(devices_to_write[mac] + '\n')
+                    else:
+                        # Keep existing data
+                        f.write(line['line'] + '\n')
+                
+                # Write new devices that weren't in existing data
+                for mac, line in devices_to_write.items():
+                    if mac not in existing_data:
+                        f.write(line + '\n')
+            
+            os.replace(temp_path, self.session_csv_path)
+        except Exception as e:
+            print(f"Error writing CSV file: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
     async def run_classic_scanner(self):
         while self.running:
             try:
@@ -959,7 +1125,107 @@ class DeviceMonitor:
     async def periodic_write(self):
         while self.running:
             try:
+                # Get GPS data first as it's used by both JSON and CSV writes
+                gps_data = self.get_gps_data()
+                
+                # Get WiFi data
+                wifi_data = await self.wifi_scanner.get_wifi_data()
+                
+                # Create lists for current devices
+                current_devices = []
+                
+                # Add current BLE devices
+                for addr, device in self.ble_scanner.devices.items():
+                    filtered_device = {k: v for k, v in device.items() 
+                                    if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
+                    if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                        filtered_device.update({
+                            "longitude": gps_data["longitude"],
+                            "latitude": gps_data["latitude"],
+                            "altitude": gps_data["altitude"],
+                            "speed": gps_data["speed"],
+                            "satellites": gps_data["satellites"]
+                        })
+                    current_devices.append(filtered_device)
+
+                # Add current Classic BT devices
+                async with self.classic_scanner._lock:
+                    for addr, device in self.classic_scanner.devices.items():
+                        if "device_class" in device:
+                            device["device_class"] = {
+                                "raw": device["device_class"]["raw"],
+                                "major_class": device["device_class"]["major_class"],
+                                "minor_class": device["device_class"]["minor_class"],
+                                "major_name": device["device_class"]["major_name"],
+                                "minor_name": device["device_class"]["minor_name"]
+                            }
+                        filtered_device = {k: v for k, v in device.items() 
+                                        if k not in ['manufacturer_info', 'raw_data', 'country', 'address', 'Channel']}
+                        filtered_device["Type"] = "BT"
+                        if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                            filtered_device.update({
+                                "longitude": gps_data["longitude"],
+                                "latitude": gps_data["latitude"],
+                                "altitude": gps_data["altitude"],
+                                "speed": gps_data["speed"],
+                                "satellites": gps_data["satellites"]
+                            })
+                        current_devices.append(filtered_device)
+
+                # Add current WiFi networks and clients
+                for network in wifi_data["networks"]:
+                    wifi_device = {
+                        "First_Seen": network.get("FirstSeen", ""),
+                        "Last_Seen": network.get("LastSeen", ""),
+                        "MAC": network.get("MAC", ""),
+                        "Device_Name": network.get("SSID", ""),
+                        "Device_Type": network.get("device_type", "Unknown"),
+                        "Type": "WIFI",
+                        "company_name": network.get("company_name", "Unknown"),
+                        "RSSI": network.get("RSSI"),
+                        "Channel": network.get("Channel"),
+                        "protocol": network.get("protocol", ""),
+                        "capabilities": network.get("capabilities", {}),
+                        "AuthMode": network.get("AuthMode", ""),
+                    }
+                    if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                        wifi_device.update({
+                            "longitude": gps_data["longitude"],
+                            "latitude": gps_data["latitude"],
+                            "altitude": gps_data["altitude"],
+                            "speed": gps_data["speed"],
+                            "satellites": gps_data["satellites"]
+                        })
+                    current_devices.append(wifi_device)
+
+                for station in wifi_data["stations"]:
+                    station_device = {
+                        "First_Seen": station.get("FirstSeen", ""),
+                        "Last_Seen": station.get("LastSeen", ""),
+                        "MAC": station.get("MAC", ""),
+                        "Device_Name": station.get("Probed", ""),
+                        "Device_Type": station.get("device_type", "Unknown"),
+                        "Type": "WIFI",
+                        "company_name": station.get("company_name", "Unknown"),
+                        "RSSI": station.get("RSSI"),
+                        "Channel": station.get("Channel", ""),  # Add Channel information
+                        "BSSID": station.get("BSSID", ""),
+                        "probe_history": station.get("probe_history", []),
+                    }
+                    if gps_data["latitude"] is not None and gps_data["longitude"] is not None:
+                        station_device.update({
+                            "longitude": gps_data["longitude"],
+                            "latitude": gps_data["latitude"],
+                            "altitude": gps_data["altitude"],
+                            "speed": gps_data["speed"],
+                            "satellites": gps_data["satellites"]
+                        })
+                    current_devices.append(station_device)
+
+                # Write both JSON and CSV data
                 await self.write_combined_json_data()
+                await self.write_csv_data(current_devices, gps_data)
+                
                 await asyncio.sleep(1)
             except Exception as e:
                 print(f"Error in periodic write: {e}")
