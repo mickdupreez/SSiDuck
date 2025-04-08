@@ -205,6 +205,7 @@ if __name__ == "__main__":
         while True:
             main_loop()
     except KeyboardInterrupt:
+        print("\nKeyboard interrupt received, exiting...")
         sys.exit(0)
     except Exception:
         sys.exit(1)
