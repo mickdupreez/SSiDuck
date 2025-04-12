@@ -90,7 +90,7 @@ class BluetoothMonitor:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.scan_logs_dir = os.path.join(self.script_dir, 'logs', 'scan_logs')
         self.bt_logs_dir = os.path.join(self.scan_logs_dir, 'bluetooth')
-        self.gps_file = os.path.join(self.script_dir, 'logs', 'gps_logs', 'gps_data.json')
+        self.gps_file = os.path.join(self.script_dir, 'logs', 'scan_logs', 'gps', 'gps_scan.json')
         os.makedirs(self.bt_logs_dir, exist_ok=True)
         self.device_classes_file = os.path.join(self.script_dir, 'data', 'device_classes.json')
         self.json_path = os.path.join(self.bt_logs_dir, 'bt_scan.json')
@@ -138,7 +138,6 @@ class BluetoothMonitor:
         return self.oui_lookup.lookup_mac(mac_addr)["company"]
 
     def get_current_gps(self) -> Dict[str, Optional[float]]:
-        """Get current GPS data from gps_data.json file."""
         try:
             if os.path.exists(self.gps_file):
                 with open(self.gps_file, 'r') as f:
@@ -312,7 +311,6 @@ class BluetoothMonitor:
                     pass
 
     async def cleanup(self):
-        print("\nCleaning up Bluetooth scanner...")
         self.running = False
         self.cleanup_files()
 
@@ -321,38 +319,27 @@ async def main():
     bt_monitor = BluetoothMonitor()
     
     def signal_handler(signum, frame):
-        print("\nReceived signal to terminate...")
-        asyncio.create_task(bt_monitor.cleanup())
+        bt_monitor.running = False
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        print("Starting Classic Bluetooth scan... Press Ctrl+C to stop.")
+        print("Starting Bluetooth scan... Press Ctrl+C to stop.")
         
         while bt_monitor.running:
             await bt_monitor.scan_devices()
             
-            # Display current devices
+            # Write data to JSON file
             async with bt_monitor._lock:
-                print(f"\nDevices found: {len(bt_monitor.devices)}")
-                for addr, device in bt_monitor.devices.items():
-                    print(f"\nDevice: {device['Device_Name']} ({addr})")
-                    print(f"Type: {device['Device_Type']}")
-                    print(f"Company: {device['company_name']}")
-                    print(f"Last seen: {device['Last_Seen']}")
-                    if device['services']:
-                        print(f"Services: {', '.join(device['services'])}")
-                
-                # Write data to JSON file
                 await bt_monitor.write_json_data()
             
             await asyncio.sleep(5)
             
     except KeyboardInterrupt:
-        print("\nStopping Bluetooth scan...")
-    except Exception as e:
-        print(f"Error in main: {e}")
+        print("\nBluetooth scan stopped.")
+    except Exception:
+        sys.exit(1)
     finally:
         await bt_monitor.cleanup()
 
@@ -360,6 +347,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt received, exiting...")
-    except Exception as e:
-        print(f"Fatal error: {e}") 
+        sys.exit(0)
+    except Exception:
+        sys.exit(1) 

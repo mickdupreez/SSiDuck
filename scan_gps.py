@@ -23,7 +23,7 @@ def load_settings(file_path="settings.json"):
             with open(file_path, "w") as f:
                 json.dump(default_settings, f, indent=2)
             return default_settings
-        except Exception as e:
+        except Exception:
             sys.exit(1)
     except Exception:
         sys.exit(1)
@@ -39,16 +39,17 @@ udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 attempt_interval = 1
 
 # Define log file path globally
-LOG_DIR = "logs/gps_logs"
-LOG_FILE = os.path.join(LOG_DIR, "gps_data.json")
+LOG_DIR = "logs/scan_logs/gps"
+LOG_FILE = os.path.join(LOG_DIR, "gps_scan.json")
 
-# Store latest GPS values
+# Store latest GPS values with timestamp
 latest_gps_data = {
     "longitude": None,
     "latitude": None,
     "altitude": None,
     "speed": None,
-    "satellites": None
+    "satellites": None,
+    "timestamp": None
 }
 
 def cleanup():
@@ -62,6 +63,15 @@ def cleanup():
 def update_gps_log():
     """Update the GPS log file with current data."""
     temp_file = LOG_FILE + ".tmp"
+    current_time = time.time()
+    
+    # Check if data is stale (older than 30 seconds)
+    if latest_gps_data["timestamp"] is None or (current_time - latest_gps_data["timestamp"]) > 30:
+        # Reset all values to None if data is stale
+        for key in latest_gps_data:
+            if key != "timestamp":
+                latest_gps_data[key] = None
+    
     try:
         with open(temp_file, 'w') as f:
             json.dump({
@@ -131,12 +141,25 @@ def main_loop():
     global udp_socket
     last_valid_time = time.time()
     last_file_update = time.time()  # Track the last time we updated the file
+    last_stale_check = time.time()  # Track the last time we checked for stale data
     UPDATE_INTERVAL = 0.1
+    STALE_CHECK_INTERVAL = 1.0  # Check for stale data every second
     
     while True:
         try:
             current_time = time.time()
-            data, addr = udp_socket.recvfrom(BUFFER_SIZE)
+            
+            # Check for stale data periodically, even without new GPS data
+            if current_time - last_stale_check >= STALE_CHECK_INTERVAL:
+                update_gps_log()  # This function already includes the 30-second stale check
+                last_stale_check = current_time
+            
+            try:
+                data, addr = udp_socket.recvfrom(BUFFER_SIZE)
+            except socket.timeout:
+                # On timeout, just continue to allow stale data checks
+                continue
+                
             raw_data = data.decode(errors="ignore").strip()
             
             for sentence in [line.strip() for line in raw_data.splitlines() if line.strip()]:
@@ -148,18 +171,19 @@ def main_loop():
                         gga_data = parse_gga(sentence)
                         if gga_data:
                             latest_gps_data.update(gga_data)
+                            latest_gps_data["timestamp"] = current_time
                     elif sentence.startswith('$GPRMC'):
                         rmc_data = parse_rmc(sentence)
                         if rmc_data:
                             latest_gps_data.update(rmc_data)
+                            latest_gps_data["timestamp"] = current_time
                     
                     # Only update the file if enough time has passed
                     if current_time - last_file_update >= UPDATE_INTERVAL:
                         update_gps_log()
                         last_file_update = current_time
                 
-        except socket.timeout:
-            current_time = time.time()
+            # Check if we need to reconnect
             if current_time - last_valid_time >= 10:
                 try:
                     udp_socket.close()
@@ -175,7 +199,7 @@ def main_loop():
                         if e.errno == 99 and UDP_IP != "0.0.0.0":
                             time.sleep(attempt_interval)
                 return
-            continue
+                
         except KeyboardInterrupt:
             cleanup()
             sys.exit(0)
@@ -185,6 +209,8 @@ def main_loop():
 
 if __name__ == "__main__":
     try:
+        print("Starting GPS scan... Press Ctrl+C to stop.")
+        
         # Ensure log directory exists
         os.makedirs(LOG_DIR, exist_ok=True)
         
@@ -205,7 +231,7 @@ if __name__ == "__main__":
         while True:
             main_loop()
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt received, exiting...")
+        print("\nGPS scan stopped.")
         sys.exit(0)
     except Exception:
         sys.exit(1)

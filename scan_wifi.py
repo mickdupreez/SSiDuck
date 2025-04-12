@@ -91,7 +91,7 @@ class WiFiMonitor:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.scan_logs_dir = os.path.join(script_dir, 'logs', 'scan_logs')
         self.wifi_logs_dir = os.path.join(self.scan_logs_dir, 'wifi')
-        self.gps_file = os.path.join(script_dir, 'logs', 'gps_logs', 'gps_data.json')
+        self.gps_file = os.path.join(script_dir, 'logs', 'scan_logs', 'gps', 'gps_scan.json')
         os.makedirs(self.wifi_logs_dir, exist_ok=True)
         self.base_path = os.path.join(self.wifi_logs_dir, 'wifi_scan')
         self.json_path = os.path.join(self.wifi_logs_dir, 'wifi_scan.json')
@@ -443,12 +443,13 @@ class WiFiMonitor:
 
     async def scan_networks(self):
         try:
-            cmd = f"sudo airodump-ng {self.monitor_interface} --channel 1,2,3,4,5,6,7,8,9,10,11,12,13,36,40,44,48,149,153,157,161 --output-format csv -w {self.base_path} --write-interval 1"
+            cmd = f"sudo airodump-ng {self.monitor_interface} --band abg --background 1 --output-format csv -w {self.base_path} --write-interval 1 >/dev/null 2>&1" 
             
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL
             )
             
             while self.running:
@@ -524,7 +525,6 @@ class WiFiMonitor:
                     pass
 
     async def cleanup(self):
-        print("\nCleaning up WiFi scanner...")
         self.running = False
         await self.stop_monitor_mode()
         self.cleanup_files()
@@ -559,8 +559,7 @@ async def main():
     wifi_monitor = WiFiMonitor()
     
     def signal_handler(signum, frame):
-        print("\nReceived signal to terminate...")
-        wifi_monitor.running = False  # Set running to False immediately
+        wifi_monitor.running = False
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -569,23 +568,12 @@ async def main():
         # Start monitor mode on wlan1
         await wifi_monitor.start_monitor_mode('wlan1')
         
-        # Start scanning
         print("Starting WiFi scan... Press Ctrl+C to stop.")
         scan_task = asyncio.create_task(wifi_monitor.scan_networks())
         
         while wifi_monitor.running:
-            # Clear the terminal (cross-platform)
-            os.system('cls' if os.name == 'nt' else 'clear')
-            
             # Get and display current scan data
             data = await wifi_monitor.get_wifi_data()
-            
-            # Format the output with fixed width
-            print("\n" + "="*50)
-            print(f"{'Networks found:':<20} {data['summary']['networks']}")
-            print(f"{'Stations found:':<20} {data['summary']['stations']}")
-            print(f"{'Last updated:':<20} {data['summary']['last_updated']}")
-            print("="*50 + "\n")
             
             # Write data to JSON file
             await wifi_monitor.write_json_data(data)
@@ -593,9 +581,9 @@ async def main():
             await asyncio.sleep(5)
             
     except KeyboardInterrupt:
-        print("\nStopping WiFi scan...")
-    except Exception as e:
-        print(f"Error in main: {e}")
+        print("\nWiFi scan stopped.")
+    except Exception:
+        sys.exit(1)
     finally:
         await wifi_monitor.cleanup()
         # Ensure the scan task is properly cancelled
@@ -610,6 +598,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt received, exiting...")
-    except Exception as e:
-        print(f"Fatal error: {e}") 
+        sys.exit(0)
+    except Exception:
+        sys.exit(1) 

@@ -90,7 +90,7 @@ class BLEMonitor:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.scan_logs_dir = os.path.join(self.script_dir, 'logs', 'scan_logs')
         self.ble_logs_dir = os.path.join(self.scan_logs_dir, 'ble')
-        self.gps_file = os.path.join(self.script_dir, 'logs', 'gps_logs', 'gps_data.json')
+        self.gps_file = os.path.join(self.script_dir, 'logs', 'scan_logs', 'gps', 'gps_scan.json')
         os.makedirs(self.ble_logs_dir, exist_ok=True)
         self.json_path = os.path.join(self.ble_logs_dir, 'ble_scan.json')
         self.company_codes_file = os.path.join(self.script_dir, 'data', 'company_codes.json')
@@ -337,12 +337,10 @@ class BLEMonitor:
                     pass
 
     async def cleanup(self):
-        print("\nCleaning up BLE scanner...")
         self.running = False
         self.cleanup_files()
 
     def get_current_gps(self) -> Dict[str, Optional[float]]:
-        """Get current GPS data from gps_data.json file."""
         try:
             if os.path.exists(self.gps_file):
                 with open(self.gps_file, 'r') as f:
@@ -371,8 +369,7 @@ async def main():
     ble_monitor = BLEMonitor()
     
     def signal_handler(signum, frame):
-        print("\nReceived signal to terminate...")
-        asyncio.create_task(ble_monitor.cleanup())
+        ble_monitor.running = False
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -382,27 +379,14 @@ async def main():
         scan_task = asyncio.create_task(ble_monitor.run_scanner())
         
         while ble_monitor.running:
-            # Display current devices
-            print(f"\nDevices found: {len(ble_monitor.devices)}")
-            for addr, device in ble_monitor.devices.items():
-                print(f"\nDevice: {device['Device_Name']} ({addr})")
-                print(f"Type: {device['Device_Type']}")
-                print(f"Company: {device['company_name']}")
-                print(f"Protocol: {device['protocol'] if device['protocol'] else 'Unknown'}")
-                print(f"RSSI: {device['RSSI']} dBm")
-                print(f"Last seen: {device['Last_Seen']}")
-                if device['services']:
-                    print(f"Services: {', '.join(device['services'])}")
-            
             # Write data to JSON file
             await ble_monitor.write_json_data()
-            
             await asyncio.sleep(5)
             
     except KeyboardInterrupt:
-        print("\nStopping BLE scan...")
-    except Exception as e:
-        print(f"Error in main: {e}")
+        print("\nBLE scan stopped.")
+    except Exception:
+        sys.exit(1)
     finally:
         await ble_monitor.cleanup()
 
@@ -410,6 +394,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nKeyboard interrupt received, exiting...")
-    except Exception as e:
-        print(f"Fatal error: {e}") 
+        sys.exit(0)
+    except Exception:
+        sys.exit(1) 
