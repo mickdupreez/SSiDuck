@@ -427,87 +427,8 @@ class ScannerManager:
         # Create file monitor
         self.file_monitor = FileMonitor(self.scan_logs_dir)
         
-        # Store Wigle stats
-        self.wigle_stats = None
-        
         # Register cleanup handler
         atexit.register(self.cleanup)
-
-    def check_wigle_stats(self) -> bool:
-        """Check Wigle stats for the user."""
-        try:
-            settings_file = "settings.json"
-            if not os.path.exists(settings_file):
-                print("No settings.json file found")
-                return False
-                
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                wigle_settings = settings.get('WIGLE_SETTINGS', {})
-                credentials = wigle_settings.get('credentials', {})
-                username = credentials.get('username')
-                password = credentials.get('password')
-                
-                if not username or not password:
-                    print("Missing Wigle credentials in settings.json")
-                    return False
-                    
-            url = "https://api.wigle.net/api/v2/stats/user?user=INFILTRATEHQ"
-            response = requests.get(url, auth=(username, password))
-            
-            if response.status_code == 200:
-                stats = response.json()
-                if stats.get('success'):
-                    statistics = stats.get('statistics', {})
-                    self.wigle_stats = statistics
-                    # Clear screen and move to top
-                    print("\033[2J\033[H", end="")
-                    print("Starting all scanners... Press Ctrl+C to stop.\n")
-                    print("INFILTRATE HQ")
-                    print(f"Global Rank: {statistics.get('rank', 'N/A')} Monthly Rank: {statistics.get('monthRank', 'N/A')}")
-                    print(f"WiFi Networks with GPS: {statistics.get('discoveredWiFiGPS', 0)} Total: {statistics.get('discoveredWiFi', 0)}")
-                    print(f"Bluetooth Devices with GPS: {statistics.get('discoveredBtGPS', 0)} Total: {statistics.get('discoveredBt', 0)}\n")
-                    print("LIVE STATS:")
-                    print("WIFI Devices: 0")
-                    print("BLE Devices: 0")
-                    print("BT Devices: 0")
-                    print("TOTAL Devices: 0")
-                    print()  # Add blank line
-                    # Move cursor to the start of the last line
-                    print("\033[1A", end="")
-                    return True
-                else:
-                    print("Failed to get Wigle stats: API returned unsuccessful response")
-                    return False
-            else:
-                print(f"Failed to get Wigle stats. Status code: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"Error checking Wigle stats: {e}")
-            return False
-
-    def update_live_stats(self, wifi_count: int, ble_count: int, bt_count: int):
-        """Update the live stats display."""
-        # Save cursor position
-        print("\033[s", end="")
-        # Move cursor up 5 lines (4 stats lines + 1 blank line)
-        print("\033[5A", end="")
-        # Clear from cursor to end of line
-        print("\033[K", end="")
-        print(f"WIFI Devices: {wifi_count}")
-        print("\033[K", end="")
-        print(f"BLE Devices: {ble_count}")
-        print("\033[K", end="")
-        print(f"BT Devices: {bt_count}")
-        print("\033[K", end="")
-        print(f"TOTAL Devices: {wifi_count + ble_count + bt_count}")
-        print("\033[K", end="")  # Clear the blank line
-        print()  # Add new blank line
-        # Restore cursor position
-        print("\033[u", end="")
-        # Flush the output
-        sys.stdout.flush()
 
     def cleanup(self):
         """Clean up processes and backup CSV file on exit."""
@@ -577,21 +498,12 @@ class ScannerManager:
         self.file_monitor.ensure_output_directory()
         while self.running:
             if self.file_monitor.has_files_changed():
-                if self.file_monitor.update_combined_file():
-                    # Get current device counts
-                    wifi_count = len(self.file_monitor.existing_devices)
-                    ble_count = sum(1 for device in self.file_monitor.existing_devices.values() if device['Type'] == 'BLE')
-                    bt_count = sum(1 for device in self.file_monitor.existing_devices.values() if device['Type'] == 'BT')
-                    # Update live stats display
-                    self.update_live_stats(wifi_count, ble_count, bt_count)
+                self.file_monitor.update_combined_file()
             await asyncio.sleep(1)
 
     async def run(self):
         """Main run method."""
         try:
-            # Check Wigle stats first
-            self.check_wigle_stats()
-            
             # Clean up any existing files
             self.cleanup_files()
             
@@ -628,7 +540,6 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        print("Starting all scanners... Press Ctrl+C to stop.")
         asyncio.run(manager.run())
     except KeyboardInterrupt:
         pass
