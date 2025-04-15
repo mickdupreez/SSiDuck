@@ -224,9 +224,6 @@ class BLEMonitor:
     def update_device_info(self, device: BLEDevice, adv: AdvertisementData):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        channel = 37
-        frequency = self.ble_frequencies[channel]
-        
         device_type_name = self.get_device_name_from_services(adv)
         
         raw_data = ""
@@ -269,7 +266,7 @@ class BLEMonitor:
                 "First_Seen": self.devices.get(device.address, {}).get("First_Seen", current_time),
                 "Last_Seen": current_time,
                 "Channel": 0,
-                "Frequency": frequency,
+                "Frequency": mfgr_id if adv.manufacturer_data else 0,  # Using manufacturer ID as the type code
                 "RSSI": adv.rssi,
                 "MfgrId": next(iter(adv.manufacturer_data.keys())) if adv.manufacturer_data else None,
                 "Type": "BLE",

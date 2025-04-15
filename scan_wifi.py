@@ -320,6 +320,7 @@ class WiFiMonitor:
                             "FirstSeen": self.devices.get(bssid, {}).get("FirstSeen", first_seen),
                             "LastSeen": last_seen,
                             "MAC": bssid,
+                            "Type": "AP",
                             "RSSI": power,
                             "Channel": channel,
                             "Frequency": frequency,
@@ -377,6 +378,7 @@ class WiFiMonitor:
                         
                         device_info = {
                             "MAC": mac,
+                            "Type": "ST",
                             "FirstSeen": self.devices.get(mac, {}).get("FirstSeen", first_seen),
                             "LastSeen": last_seen,
                             "RSSI": power,
@@ -507,8 +509,7 @@ class WiFiMonitor:
             "total_networks": len(networks),
             "total_stations": len(stations),
             "networks": networks,
-            "stations": stations,
-            "summary": data["summary"]
+            "stations": stations
         }
         
         temp_path = f"{self.json_path}.tmp"
