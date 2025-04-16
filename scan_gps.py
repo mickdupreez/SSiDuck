@@ -62,6 +62,7 @@ latest_gps_data = {
     "satellites": None,
     "timestamp": None,
     "distance_traveled": 0.0,  # Total distance in kilometers
+    "distance_since_last_api_call": 0.0,  # Distance since last API call
     "location_info": {
         "address": None,
         "country": None,
@@ -79,7 +80,11 @@ latest_gps_data = {
 # Store previous position for distance calculation
 previous_position = {
     "latitude": None,
-    "longitude": None
+    "longitude": None,
+    "last_api_position": {  # Position at last API call
+        "latitude": None,
+        "longitude": None
+    }
 }
 
 def cleanup():
@@ -178,12 +183,13 @@ def update_gps_log():
     """Update the GPS log file with current data."""
     temp_file = LOG_FILE + ".tmp"
     current_time = time.time()
+    DISTANCE_THRESHOLD = 0.01  # 10 meters in kilometers
     
     # Check if data is stale (older than 30 seconds)
     if latest_gps_data["timestamp"] is None or (current_time - latest_gps_data["timestamp"]) > 30:
         # Reset all values to None if data is stale
         for key in latest_gps_data:
-            if key != "timestamp" and key != "distance_traveled":  # Don't reset distance
+            if key not in ["timestamp", "distance_traveled", "distance_since_last_api_call"]:  # Don't reset distances
                 if isinstance(latest_gps_data[key], dict):
                     for subkey in latest_gps_data[key]:
                         latest_gps_data[key][subkey] = None
@@ -199,18 +205,50 @@ def update_gps_log():
                 latest_gps_data["latitude"], latest_gps_data["longitude"]
             )
             latest_gps_data["distance_traveled"] += distance
+            
+            # Calculate distance since last API call
+            if previous_position["last_api_position"]["latitude"] is not None:
+                latest_gps_data["distance_since_last_api_call"] = calculate_distance(
+                    previous_position["last_api_position"]["latitude"],
+                    previous_position["last_api_position"]["longitude"],
+                    latest_gps_data["latitude"],
+                    latest_gps_data["longitude"]
+                )
         
         # Update previous position
         previous_position["latitude"] = latest_gps_data["latitude"]
         previous_position["longitude"] = latest_gps_data["longitude"]
         
-        location_info = get_location_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
-        if location_info:
-            latest_gps_data["location_info"].update(location_info)
+        location_settings = settings["LOCATION_SETTINGS"]
+        should_update_location = (
+            latest_gps_data["distance_since_last_api_call"] >= DISTANCE_THRESHOLD or
+            (latest_gps_data["location_info"]["last_update"] is None) or
+            (current_time - latest_gps_data["location_info"]["last_update"] >= location_settings["geocoding_cache_seconds"])
+        )
         
-        weather_info = get_weather_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
-        if weather_info:
-            latest_gps_data["weather_info"].update(weather_info)
+        should_update_weather = (
+            latest_gps_data["distance_since_last_api_call"] >= DISTANCE_THRESHOLD or
+            (latest_gps_data["weather_info"]["last_update"] is None) or
+            (current_time - latest_gps_data["weather_info"]["last_update"] >= location_settings["weather_cache_seconds"])
+        )
+        
+        if should_update_location:
+            location_info = get_location_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
+            if location_info:
+                latest_gps_data["location_info"].update(location_info)
+                # Update last API position after successful call
+                previous_position["last_api_position"]["latitude"] = latest_gps_data["latitude"]
+                previous_position["last_api_position"]["longitude"] = latest_gps_data["longitude"]
+                latest_gps_data["distance_since_last_api_call"] = 0.0
+        
+        if should_update_weather:
+            weather_info = get_weather_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
+            if weather_info:
+                latest_gps_data["weather_info"].update(weather_info)
+                # Update last API position after successful call
+                previous_position["last_api_position"]["latitude"] = latest_gps_data["latitude"]
+                previous_position["last_api_position"]["longitude"] = latest_gps_data["longitude"]
+                latest_gps_data["distance_since_last_api_call"] = 0.0
     
     try:
         with open(temp_file, 'w') as f:
