@@ -17,7 +17,13 @@ ctk.set_default_color_theme("dark-blue")
 
 class InfoBar(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
+        # Create outer container frame
+        self.container = ctk.CTkFrame(master, fg_color="#2d2d2d", corner_radius=15)
+        self.container.pack(fill="x", padx=10, pady=5)
+        
+        # Initialize inner frame
+        super().__init__(self.container, **kwargs)
+        self.pack(fill="x", padx=10, pady=5)
         
         # Styling
         self.configure(fg_color="#1a1a1a", height=30)
@@ -43,7 +49,7 @@ class InfoBar(ctk.CTkFrame):
             height=20,
             command=self.toggle_wardrive
         )
-        self.start_stop_btn.pack(side="left", padx=5)
+        self.start_stop_btn.pack(side="right", padx=5)
         
     def reset_labels(self):
         """Reset all labels to their default empty state"""
@@ -227,49 +233,46 @@ class DeviceFeedFrame(ctk.CTkFrame):
         
         # Initialize device tracking
         self.known_devices = set()
+        self.last_file_size = 0
         
         # Start periodic updates
         self.update_feed()
     
     def update_feed(self):
         try:
-            with open("logs/scan_logs/wardrive/wardrive.json", "r") as f:
-                data = json.load(f)
+            csv_file = "logs/scan_logs/wardrive/wardrive.csv"
+            if not os.path.exists(csv_file):
+                self.after(1000, self.update_feed)
+                return
                 
-                current_devices = set()
+            current_size = os.path.getsize(csv_file)
+            if current_size == self.last_file_size:
+                self.after(1000, self.update_feed)
+                return
+                
+            self.last_file_size = current_size
+            
+            with open(csv_file, 'r') as f:
+                # Skip header lines
+                next(f)  # Skip WigleWifi header
+                next(f)  # Skip column headers
+                
                 new_devices = []
+                for line in f:
+                    try:
+                        parts = line.strip().split(',')
+                        if len(parts) >= 2:
+                            mac = parts[0]
+                            ssid = parts[1]
+                            device_type = parts[-1] if len(parts) > 10 else "Unknown"
+                            
+                            device_info = f"{ssid} ({mac}) - {device_type}"
+                            if device_info not in self.known_devices:
+                                new_devices.append(device_info)
+                                self.known_devices.add(device_info)
+                    except Exception:
+                        continue
                 
-                # Process BLE devices
-                if "ble_devices" in data:
-                    for dev in data["ble_devices"]:
-                        mac = dev.get("bdaddr", "??:??:??")
-                        name = dev.get("name", "Unknown BLE")
-                        device_info = f"{name} ({mac})"
-                        current_devices.add(device_info)
-                        if device_info not in self.known_devices:
-                            new_devices.append(device_info)
-                
-                # Process Bluetooth devices
-                if "bt_devices" in data:
-                    for dev in data["bt_devices"]:
-                        mac = dev.get("bdaddr", "??:??:??")
-                        name = dev.get("name", "Unknown BT")
-                        device_info = f"{name} ({mac})"
-                        current_devices.add(device_info)
-                        if device_info not in self.known_devices:
-                            new_devices.append(device_info)
-                
-                # Process WiFi devices (Access Points)
-                if "access_points" in data:
-                    for dev in data["access_points"]:
-                        mac = dev.get("bssid", "??:??:??")
-                        name = dev.get("essid", "Unknown AP")
-                        device_info = f"{name} ({mac})"
-                        current_devices.add(device_info)
-                        if device_info not in self.known_devices:
-                            new_devices.append(device_info)
-                
-                # Add new devices to the display
                 if new_devices:
                     self.text_widget.configure(state="normal")
                     for device in new_devices:
@@ -277,18 +280,10 @@ class DeviceFeedFrame(ctk.CTkFrame):
                     self.text_widget.configure(state="disabled")
                     self.text_widget.see("end")  # Auto-scroll to latest entries
                 
-                # Update known devices
-                self.known_devices = current_devices
-                
-        except FileNotFoundError:
-            print("Waiting for wardrive.json to be created...")
-        except json.JSONDecodeError:
-            print("Waiting for valid JSON data...")
         except Exception as e:
             print(f"Error updating device feed: {e}")
         
-        # Schedule next update more frequently
-        self.after(1000, self.update_feed)  # Update every second
+        self.after(1000, self.update_feed)
 
 class StatisticsFrame(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
@@ -350,11 +345,10 @@ class StatsViewer(ctk.CTk):
         self.geometry("800x480")
         self.configure(fg_color="#1a1a1a")
         
-        # Info bar at top
+        # Info bar at top (container is now handled by InfoBar class)
         self.info_bar = InfoBar(self)
-        self.info_bar.pack(fill="x", padx=5, pady=2)
         
-        # Current scan frame (now below info bar)
+        # Current scan frame
         self.current_scan_frame = CurrentScanFrame(self)
         self.current_scan_frame.pack(fill="x", padx=10, pady=5)
         
@@ -375,6 +369,7 @@ class StatsViewer(ctk.CTk):
             "logs/scan_logs/gps/gps_scan.json",
             "logs/scan_logs/bluetooth/bt_scan.json",
             "logs/scan_logs/wardrive/wardrive.json",
+            "logs/scan_logs/wardrive/wardrive.csv",
             "logs/scan_logs/wifi/wifi_scan-01.csv",
             "logs/scan_logs/wifi/wifi_scan.json"
         ]
@@ -388,7 +383,10 @@ class StatsViewer(ctk.CTk):
                 print(f"Error cleaning up {path}: {e}")
         
         # Reset UI components
-        self.stats_frame.reset_stats()
+        self.stats_frame.device_feed.text_widget.configure(state="normal")
+        self.stats_frame.device_feed.text_widget.delete("1.0", "end")
+        self.stats_frame.device_feed.text_widget.configure(state="disabled")
+        self.stats_frame.device_feed.known_devices.clear()
         self.current_scan_frame.reset_stats()
     
     def load_data(self):
