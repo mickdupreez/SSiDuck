@@ -5,6 +5,11 @@ import os
 import sys
 import time
 import atexit
+import traceback
+import requests
+from math import radians, sin, cos, sqrt, atan2
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
 
 def load_settings(file_path="settings.json"):
     default_settings = {
@@ -13,6 +18,12 @@ def load_settings(file_path="settings.json"):
             "udp_port": 11123,
             "buffer_size": 53248,
             "socket_timeout_sec": 1
+        },
+        "LOCATION_SETTINGS": {
+            "geocoding_cache_seconds": 15,    # 15 seconds
+            "weather_cache_seconds": 30,      # 30 seconds
+            "openweathermap_api_key": "",     # Add your API key here
+            "user_agent": "SSiDuck_GPS_Scanner"  # User agent for Nominatim
         }
     }
     try:
@@ -49,7 +60,26 @@ latest_gps_data = {
     "altitude": None,
     "speed": None,
     "satellites": None,
-    "timestamp": None
+    "timestamp": None,
+    "distance_traveled": 0.0,  # Total distance in kilometers
+    "location_info": {
+        "address": None,
+        "country": None,
+        "city": None,
+        "last_update": None
+    },
+    "weather_info": {
+        "temperature": None,
+        "humidity": None,
+        "conditions": None,
+        "last_update": None
+    }
+}
+
+# Store previous position for distance calculation
+previous_position = {
+    "latitude": None,
+    "longitude": None
 }
 
 def cleanup():
@@ -60,6 +90,90 @@ def cleanup():
     except Exception:
         pass
 
+def get_location_info(lat, lon):
+    """Get location information using Nominatim."""
+    if lat is None or lon is None:
+        return None
+    
+    current_time = time.time()
+    location_settings = settings["LOCATION_SETTINGS"]
+    cache_duration = location_settings["geocoding_cache_seconds"]
+    
+    # Check if cached data is still valid
+    if (latest_gps_data["location_info"]["last_update"] and 
+        current_time - latest_gps_data["location_info"]["last_update"] < cache_duration):
+        return latest_gps_data["location_info"]
+    
+    try:
+        geolocator = Nominatim(user_agent=location_settings["user_agent"])
+        location = geolocator.reverse(f"{lat}, {lon}", language="en")
+        
+        if location and location.raw.get("address"):
+            address_data = location.raw["address"]
+            return {
+                "address": location.address,
+                "country": address_data.get("country"),
+                "city": address_data.get("city") or address_data.get("town") or address_data.get("village"),
+                "last_update": current_time
+            }
+    except (GeocoderTimedOut, Exception) as e:
+        print(f"Geocoding error: {str(e)}")
+    
+    return None
+
+def get_weather_info(lat, lon):
+    """Get weather information using OpenWeatherMap."""
+    if lat is None or lon is None:
+        return None
+    
+    current_time = time.time()
+    location_settings = settings["LOCATION_SETTINGS"]
+    cache_duration = location_settings["weather_cache_seconds"]
+    api_key = location_settings["openweathermap_api_key"]
+    
+    if not api_key:
+        return None
+    
+    # Check if cached data is still valid
+    if (latest_gps_data["weather_info"]["last_update"] and 
+        current_time - latest_gps_data["weather_info"]["last_update"] < cache_duration):
+        return latest_gps_data["weather_info"]
+    
+    try:
+        url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        
+        weather_data = response.json()
+        return {
+            "temperature": weather_data["main"]["temp"],
+            "humidity": weather_data["main"]["humidity"],
+            "conditions": weather_data["weather"][0]["description"],
+            "last_update": current_time
+        }
+    except Exception as e:
+        print(f"Weather API error: {str(e)}")
+    
+    return None
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Calculate distance between two points using Haversine formula."""
+    if None in (lat1, lon1, lat2, lon2):
+        return 0.0
+        
+    R = 6371  # Earth's radius in kilometers
+
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    distance = R * c
+    
+    return distance
+
 def update_gps_log():
     """Update the GPS log file with current data."""
     temp_file = LOG_FILE + ".tmp"
@@ -69,8 +183,34 @@ def update_gps_log():
     if latest_gps_data["timestamp"] is None or (current_time - latest_gps_data["timestamp"]) > 30:
         # Reset all values to None if data is stale
         for key in latest_gps_data:
-            if key != "timestamp":
-                latest_gps_data[key] = None
+            if key != "timestamp" and key != "distance_traveled":  # Don't reset distance
+                if isinstance(latest_gps_data[key], dict):
+                    for subkey in latest_gps_data[key]:
+                        latest_gps_data[key][subkey] = None
+                else:
+                    latest_gps_data[key] = None
+    
+    # Update location and weather info if coordinates are valid
+    if latest_gps_data["latitude"] is not None and latest_gps_data["longitude"] is not None:
+        # Calculate distance if we have previous position
+        if previous_position["latitude"] is not None and previous_position["longitude"] is not None:
+            distance = calculate_distance(
+                previous_position["latitude"], previous_position["longitude"],
+                latest_gps_data["latitude"], latest_gps_data["longitude"]
+            )
+            latest_gps_data["distance_traveled"] += distance
+        
+        # Update previous position
+        previous_position["latitude"] = latest_gps_data["latitude"]
+        previous_position["longitude"] = latest_gps_data["longitude"]
+        
+        location_info = get_location_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
+        if location_info:
+            latest_gps_data["location_info"].update(location_info)
+        
+        weather_info = get_weather_info(latest_gps_data["latitude"], latest_gps_data["longitude"])
+        if weather_info:
+            latest_gps_data["weather_info"].update(weather_info)
     
     try:
         with open(temp_file, 'w') as f:
@@ -79,7 +219,10 @@ def update_gps_log():
                 "latitude": latest_gps_data["latitude"],
                 "altitude": latest_gps_data["altitude"],
                 "speed": latest_gps_data["speed"],
-                "satellites": latest_gps_data["satellites"]
+                "satellites": latest_gps_data["satellites"],
+                "distance_traveled": round(latest_gps_data["distance_traveled"], 3),  # Round to 3 decimal places
+                "location_info": latest_gps_data["location_info"],
+                "weather_info": latest_gps_data["weather_info"]
             }, f, indent=2)
         # Atomic rename
         os.replace(temp_file, LOG_FILE)
@@ -185,6 +328,7 @@ def main_loop():
                 
             # Check if we need to reconnect
             if current_time - last_valid_time >= 10:
+                print("No valid data received for 10 seconds, attempting to reconnect...")
                 try:
                     udp_socket.close()
                 except Exception:
@@ -194,16 +338,23 @@ def main_loop():
                     try:
                         udp_socket.bind((UDP_IP, UDP_PORT))
                         udp_socket.settimeout(SOCKET_TIMEOUT)
+                        print("Successfully reconnected to UDP socket")
                         break
                     except OSError as e:
                         if e.errno == 99 and UDP_IP != "0.0.0.0":
+                            print(f"Reconnection failed, waiting {attempt_interval} seconds...")
                             time.sleep(attempt_interval)
-                return
+                        else:
+                            raise
+                last_valid_time = current_time  # Reset the timer after reconnection
+                continue  # Continue the main loop after reconnection
                 
         except KeyboardInterrupt:
             cleanup()
             sys.exit(0)
-        except Exception:
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+            print(traceback.format_exc())
             cleanup()
             sys.exit(1)
 
@@ -220,18 +371,34 @@ if __name__ == "__main__":
         # Register cleanup handler
         atexit.register(cleanup)
         
+        print("Attempting to bind to UDP socket...")
         while True:
             try:
                 udp_socket.bind((UDP_IP, UDP_PORT))
                 udp_socket.settimeout(SOCKET_TIMEOUT)
+                print(f"Successfully bound to {UDP_IP}:{UDP_PORT}")
                 break
             except OSError as e:
+                print(f"Socket binding error: {e}")
                 if e.errno == 99 and UDP_IP != "0.0.0.0":
+                    print(f"Waiting {attempt_interval} seconds before retry...")
                     time.sleep(attempt_interval)
+                else:
+                    raise
+        
+        print("Entering main loop...")
         while True:
-            main_loop()
+            try:
+                main_loop()
+            except Exception as e:
+                print(f"Error in main loop: {e}")
+                print(traceback.format_exc())
+                sys.exit(1)
     except KeyboardInterrupt:
         print("\nGPS scan stopped.")
         sys.exit(0)
-    except Exception:
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        print(traceback.format_exc())
         sys.exit(1)
+
