@@ -25,7 +25,6 @@ class DeviceStats:
         self._get_wigle_stats()
         
     def _get_wigle_stats(self):
-        """Get Wigle stats for the user and update stats file."""
         try:
             settings_file = "settings.json"
             if not os.path.exists(settings_file):
@@ -89,7 +88,6 @@ class DeviceStats:
             self._save_stats()
 
     def _load_stats(self) -> Dict[str, Any]:
-        """Load existing stats from file or create new if doesn't exist"""
         if self.stats_file.exists():
             with open(self.stats_file, 'r') as f:
                 data = json.load(f)
@@ -118,8 +116,6 @@ class DeviceStats:
         }
 
     def _save_stats(self):
-        """Save current stats to file"""
-        # Create a new dictionary with the desired order
         ordered_stats = {
             "wigle_stats": self.stats["wigle_stats"],
             "summary": self.stats["summary"],
@@ -132,7 +128,6 @@ class DeviceStats:
 
     def _calculate_hash(self, device: Dict[str, Any]) -> str:
         """Calculate a hash of the device data to detect changes"""
-        # Create a copy of the device data without the update counter and first_seen
         device_data = device.copy()
         if "update_count" in device_data:
             del device_data["update_count"]
@@ -142,7 +137,6 @@ class DeviceStats:
 
     def _update_device(self, device_type: str, device: Dict[str, Any], device_id: str, current_time: str):
         """Update a device's stats if it has changed"""
-        # Get the appropriate container based on device type
         if device_type == "ble":
             container = self.stats["devices"]["ble_devices"]
         elif device_type == "bt":
@@ -154,10 +148,8 @@ class DeviceStats:
         else:
             return
 
-        # Calculate hash of current device data
         current_hash = self._calculate_hash(device)
 
-        # Check if device exists and has changed
         if device_id in container:
             existing_hash = self._calculate_hash(container[device_id])
             if current_hash == existing_hash:
