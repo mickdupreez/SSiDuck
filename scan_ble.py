@@ -338,6 +338,7 @@ class BLEMonitor:
         self.cleanup_files()
 
     def get_current_gps(self) -> Dict[str, Optional[float]]:
+        """Get current GPS data from gps_data.json file."""
         try:
             if os.path.exists(self.gps_file):
                 with open(self.gps_file, 'r') as f:
@@ -347,7 +348,20 @@ class BLEMonitor:
                         "latitude": data.get("latitude"),
                         "altitude": data.get("altitude"),
                         "speed": data.get("speed"),
-                        "satellites": data.get("satellites")
+                        "satellites": data.get("satellites"),
+                        "distance_traveled": data.get("distance_traveled"),
+                        "location_info": data.get("location_info", {
+                            "address": None,
+                            "country": None,
+                            "city": None,
+                            "last_update": None
+                        }),
+                        "weather_info": data.get("weather_info", {
+                            "temperature": None,
+                            "humidity": None,
+                            "conditions": None,
+                            "last_update": None
+                        })
                     }
         except Exception as e:
             print(f"Error reading GPS data: {e}")
@@ -358,7 +372,20 @@ class BLEMonitor:
             "latitude": None,
             "altitude": None,
             "speed": None,
-            "satellites": None
+            "satellites": None,
+            "distance_traveled": None,
+            "location_info": {
+                "address": None,
+                "country": None,
+                "city": None,
+                "last_update": None
+            },
+            "weather_info": {
+                "temperature": None,
+                "humidity": None,
+                "conditions": None,
+                "last_update": None
+            }
         }
 
 async def main():
