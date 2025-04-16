@@ -7,13 +7,230 @@ import signal
 import sys
 import time
 import csv
+import hashlib
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import subprocess
 import atexit
 import shutil
 import requests
 from pathlib import Path
+
+class DeviceStats:
+    def __init__(self):
+        self.stats_file = Path("logs/stats/stats.json")
+        self.stats_file.parent.mkdir(parents=True, exist_ok=True)
+        self.stats = self._load_stats()
+        self.wigle_stats = None
+        self._get_wigle_stats()
+        
+    def _get_wigle_stats(self):
+        """Get Wigle stats for the user and update stats file."""
+        try:
+            settings_file = "settings.json"
+            if not os.path.exists(settings_file):
+                self.wigle_stats = None
+                self.stats['wigle_stats'] = None
+                self._save_stats()
+                return
+                
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                wigle_settings = settings.get('WIGLE_SETTINGS', {})
+                credentials = wigle_settings.get('credentials', {})
+                api_username = credentials.get('api_username')
+                api_password = credentials.get('api_password')
+                username = credentials.get('username')
+                if not api_username or not api_password:
+                    self.wigle_stats = None
+                    self.stats['wigle_stats'] = None
+                    self._save_stats()
+                    return
+                    
+            url = f"https://api.wigle.net/api/v2/stats/user?user={username}"
+            response = requests.get(url, auth=(api_username, api_password))
+            
+            # Always update stats with latest API response
+            if response.status_code == 200:
+                stats = response.json()
+                if stats.get('success'):
+                    wigle_stats = stats.get('statistics', {})
+                    # Filter out unwanted fields
+                    fields_to_remove = [
+                        'totalWiFiLocations', 'first', 'last', 'self',
+                        'discoveredBt', 'eventMonthCount', 'eventPrevMonthCount', 'prevRank',
+                        'discoveredWiFiGPSPercent', 'discoveredWiFi', 'discoveredCellGPS', 'discoveredCell'
+                    ]
+                    for field in fields_to_remove:
+                        wigle_stats.pop(field, None)
+                    
+                    # Create new ordered dictionary with desired field sequence
+                    ordered_wigle_stats = {
+                        'userName': wigle_stats.get('userName'),
+                        'rank': wigle_stats.get('rank'),
+                        'monthRank': wigle_stats.get('monthRank'),
+                        'prevMonthRank': wigle_stats.get('prevMonthRank'),
+                        'discoveredWiFiGPS': wigle_stats.get('discoveredWiFiGPS'),
+                        'discoveredBtGPS': wigle_stats.get('discoveredBtGPS')
+                    }
+                    self.wigle_stats = ordered_wigle_stats
+                else:
+                    self.wigle_stats = None
+            else:
+                self.wigle_stats = None
+                
+            # Always update the stats file with latest data
+            self.stats['wigle_stats'] = self.wigle_stats
+            self._save_stats()
+            
+        except Exception:
+            self.wigle_stats = None
+            self.stats['wigle_stats'] = None
+            self._save_stats()
+
+    def _load_stats(self) -> Dict[str, Any]:
+        """Load existing stats from file or create new if doesn't exist"""
+        if self.stats_file.exists():
+            with open(self.stats_file, 'r') as f:
+                data = json.load(f)
+                # Remove old device_counts if it exists
+                if "device_counts" in data:
+                    del data["device_counts"]
+                return data
+        return {
+            "wigle_stats": None,
+            "devices": {
+                "ble_devices": {},
+                "bt_devices": {},
+                "wifi_devices": {
+                    "access_points": {},
+                    "stations": {}
+                }
+            },
+            "last_scan": None,
+            "summary": {
+                "BLE_DEVICES": 0,
+                "BT_DEVICES": 0,
+                "ACCESS_POINTS": 0,
+                "STATIONS": 0,
+                "TOTAL_DEVICES": 0
+            }
+        }
+
+    def _save_stats(self):
+        """Save current stats to file"""
+        # Create a new dictionary with the desired order
+        ordered_stats = {
+            "wigle_stats": self.stats["wigle_stats"],
+            "summary": self.stats["summary"],
+            "last_scan": self.stats["last_scan"],
+            "devices": self.stats["devices"]
+        }
+        
+        with open(self.stats_file, 'w') as f:
+            json.dump(ordered_stats, f, indent=2)
+
+    def _calculate_hash(self, device: Dict[str, Any]) -> str:
+        """Calculate a hash of the device data to detect changes"""
+        # Create a copy of the device data without the update counter and first_seen
+        device_data = device.copy()
+        if "update_count" in device_data:
+            del device_data["update_count"]
+        if "first_seen" in device_data:
+            del device_data["first_seen"]
+        return hashlib.md5(json.dumps(device_data, sort_keys=True).encode()).hexdigest()
+
+    def _update_device(self, device_type: str, device: Dict[str, Any], device_id: str, current_time: str):
+        """Update a device's stats if it has changed"""
+        # Get the appropriate container based on device type
+        if device_type == "ble":
+            container = self.stats["devices"]["ble_devices"]
+        elif device_type == "bt":
+            container = self.stats["devices"]["bt_devices"]
+        elif device_type == "wifi_ap":
+            container = self.stats["devices"]["wifi_devices"]["access_points"]
+        elif device_type == "wifi_station":
+            container = self.stats["devices"]["wifi_devices"]["stations"]
+        else:
+            return
+
+        # Calculate hash of current device data
+        current_hash = self._calculate_hash(device)
+
+        # Check if device exists and has changed
+        if device_id in container:
+            existing_hash = self._calculate_hash(container[device_id])
+            if current_hash == existing_hash:
+                return  # No changes, no update needed
+        else:
+            # This is a new device, set first_seen time
+            device["first_seen"] = current_time
+
+        # Update device data and increment counter
+        device["update_count"] = container.get(device_id, {}).get("update_count", 0) + 1
+        container[device_id] = device
+
+    def _update_device_counts(self):
+        """Update the device counts in stats"""
+        wifi_aps = len(self.stats["devices"]["wifi_devices"]["access_points"])
+        wifi_stations = len(self.stats["devices"]["wifi_devices"]["stations"])
+        ble_count = len(self.stats["devices"]["ble_devices"])
+        bt_count = len(self.stats["devices"]["bt_devices"])
+        
+        self.stats["summary"] = {
+            "BLE_DEVICES": ble_count,
+            "BT_DEVICES": bt_count,
+            "ACCESS_POINTS": wifi_aps,
+            "STATIONS": wifi_stations,
+            "TOTAL_DEVICES": ble_count + bt_count + wifi_aps + wifi_stations
+        }
+
+    def process_wardrive(self, wardrive_file: Path):
+        """Process a wardrive.json file and update stats"""
+        try:
+            with open(wardrive_file, 'r') as f:
+                wardrive_data = json.load(f)
+
+            # Get current timestamp
+            current_time = wardrive_data.get("timestamp")
+            if not current_time:
+                current_time = datetime.now().isoformat()
+
+            # Update last scan timestamp
+            self.stats["last_scan"] = current_time
+
+            # Process BLE devices
+            for device in wardrive_data.get("devices", {}).get("ble_devices", []):
+                device_id = device.get("BD_ADDR")
+                if device_id:
+                    self._update_device("ble", device, device_id, current_time)
+
+            # Process BT devices
+            for device in wardrive_data.get("devices", {}).get("bt_devices", []):
+                device_id = device.get("BD_ADDR")
+                if device_id:
+                    self._update_device("bt", device, device_id, current_time)
+
+            # Process WiFi access points
+            for device in wardrive_data.get("devices", {}).get("wifi_devices", {}).get("access_points", []):
+                device_id = device.get("MAC")
+                if device_id:
+                    self._update_device("wifi_ap", device, device_id, current_time)
+
+            # Process WiFi stations
+            for device in wardrive_data.get("devices", {}).get("wifi_devices", {}).get("stations", []):
+                device_id = device.get("MAC")
+                if device_id:
+                    self._update_device("wifi_station", device, device_id, current_time)
+
+            # Update device counts
+            self._update_device_counts()
+
+            # Save updated stats
+            self._save_stats()
+
+        except Exception as e:
+            pass
 
 class FileMonitor:
     def __init__(self, scan_logs_dir: str):
@@ -21,6 +238,12 @@ class FileMonitor:
         self.ble_file = os.path.join(scan_logs_dir, 'ble', 'ble_scan.json')
         self.bt_file = os.path.join(scan_logs_dir, 'bluetooth', 'bt_scan.json')
         self.wifi_file = os.path.join(scan_logs_dir, 'wifi', 'wifi_scan.json')
+        
+        # Hardcoded output paths
+        self.output_file = "logs/scan_logs/wardrive/wardrive.json"
+        self.csv_file = "logs/scan_logs/wardrive/wardrive.csv"
+        self.wardrive_logs_dir = "logs/scan_logs/wardrive/upload"
+        os.makedirs(self.wardrive_logs_dir, exist_ok=True)
         
         # Load settings for Wigle upload
         self.settings_file = "settings.json"
@@ -33,11 +256,8 @@ class FileMonitor:
         self.upload_enabled = upload_settings.get('enabled', False)
         self.wigle_upload_url = upload_settings.get('url', 'https://api.wigle.net/api/v2/file/upload')
         
-        # Set output paths from settings
-        self.output_file = upload_settings.get('output_file', os.path.join(scan_logs_dir, 'wardrive', 'wardrive.json'))
-        self.csv_file = upload_settings.get('csv_file', os.path.join(scan_logs_dir, 'wardrive', 'wardrive.csv'))
-        self.wardrive_logs_dir = upload_settings.get('output_dir', os.path.join(scan_logs_dir, 'wardrive', 'upload'))
-        os.makedirs(self.wardrive_logs_dir, exist_ok=True)
+        # Initialize device stats
+        self.device_stats = DeviceStats()
         
         # Backup existing CSV file if it exists
         self.backup_csv_file()
@@ -88,8 +308,45 @@ class FileMonitor:
             print(f"Error uploading {file_path} to Wigle: {e}")
             return False
 
+    def process_upload_directory(self):
+        """Process all files in the upload directory."""
+        if not os.path.exists(self.wardrive_logs_dir):
+            return
+
+        for filename in os.listdir(self.wardrive_logs_dir):
+            file_path = os.path.join(self.wardrive_logs_dir, filename)
+            if not os.path.isfile(file_path):
+                continue
+
+            try:
+                # Count lines in file
+                with open(file_path, 'r') as f:
+                    line_count = sum(1 for _ in f)
+
+                if line_count < 50:
+                    # Delete files with less than 50 lines
+                    try:
+                        os.remove(file_path)
+                        print(f"Deleted small file {filename} ({line_count} lines)")
+                    except Exception as e:
+                        print(f"Error deleting small file {filename}: {e}")
+                    continue
+
+                # Upload file if it has enough lines
+                if self.upload_file_to_wigle(file_path):
+                    try:
+                        os.remove(file_path)
+                        print(f"Successfully uploaded and deleted {filename}")
+                    except Exception as e:
+                        print(f"Error deleting uploaded file {filename}: {e}")
+                else:
+                    print(f"Failed to upload {filename}")
+
+            except Exception as e:
+                print(f"Error processing file {filename}: {e}")
+
     def backup_csv_file(self):
-        """Backup the CSV file with current date and time if it exists and upload to Wigle."""
+        """Backup the CSV file with current date and time if it exists."""
         if os.path.exists(self.csv_file):
             current_time = datetime.now().strftime("%d-%m-%y_%H:%M")
             backup_filename = f"SSIDuck_{current_time}.csv"
@@ -98,14 +355,9 @@ class FileMonitor:
                 shutil.move(self.csv_file, backup_path)
                 print(f"Backed up existing CSV file to {backup_path}")
                 
-                # Upload the backed up file to Wigle
-                if self.upload_file_to_wigle(backup_path):
-                    # Only delete the file if upload was successful
-                    try:
-                        os.remove(backup_path)
-                        print(f"Deleted uploaded file: {backup_path}")
-                    except Exception as e:
-                        print(f"Error deleting uploaded file: {e}")
+                # Process all files in upload directory
+                self.process_upload_directory()
+                
             except Exception as e:
                 print(f"Error backing up CSV file: {e}")
 
@@ -402,6 +654,9 @@ class FileMonitor:
             
             # Process and update CSV file
             self.process_devices_to_csv(combined_data)
+            
+            # Update stats
+            self.device_stats.process_wardrive(Path(self.output_file))
                 
         except Exception as e:
             print(f"Error writing output files: {e}")
