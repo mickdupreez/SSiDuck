@@ -347,21 +347,17 @@ class BLEMonitor:
                         "longitude": data.get("longitude"),
                         "latitude": data.get("latitude"),
                         "altitude": data.get("altitude"),
-                        "speed": data.get("speed"),
                         "satellites": data.get("satellites"),
-                        "distance_traveled": data.get("distance_traveled"),
-                        "location_info": data.get("location_info", {
-                            "address": None,
-                            "country": None,
-                            "city": None,
-                            "last_update": None
-                        }),
-                        "weather_info": data.get("weather_info", {
-                            "temperature": None,
-                            "humidity": None,
-                            "conditions": None,
-                            "last_update": None
-                        })
+                        "location_info": {
+                            "address": data.get("location_info", {}).get("address"),
+                            "country": data.get("location_info", {}).get("country"),
+                            "city": data.get("location_info", {}).get("city")
+                        },
+                        "weather_info": {
+                            "temperature": data.get("weather_info", {}).get("temperature"),
+                            "humidity": data.get("weather_info", {}).get("humidity"),
+                            "conditions": data.get("weather_info", {}).get("conditions")
+                        }
                     }
         except Exception as e:
             print(f"Error reading GPS data: {e}")
@@ -371,20 +367,16 @@ class BLEMonitor:
             "longitude": None,
             "latitude": None,
             "altitude": None,
-            "speed": None,
             "satellites": None,
-            "distance_traveled": None,
             "location_info": {
                 "address": None,
                 "country": None,
-                "city": None,
-                "last_update": None
+                "city": None
             },
             "weather_info": {
                 "temperature": None,
                 "humidity": None,
-                "conditions": None,
-                "last_update": None
+                "conditions": None
             }
         }
 
