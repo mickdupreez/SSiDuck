@@ -676,7 +676,16 @@ class ScannerManager:
         
         # Register cleanup handler
         atexit.register(self.cleanup)
+        
+        # Set up signal handlers
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
 
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals"""
+        self.running = False
+        self.cleanup()
+        
     def cleanup(self):
         """Clean up processes and backup CSV file on exit."""
         self.cleanup_processes()
@@ -693,6 +702,47 @@ class ScannerManager:
             except Exception:
                 pass
         self.file_monitor.cleanup_output_file()
+
+    def cleanup_processes(self):
+        """Clean up processes on exit."""
+        self.running = False
+        self.file_monitor.running = False
+        
+        # First try graceful termination with SIGTERM
+        for name, process in self.processes.items():
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        
+        # Wait for processes to terminate
+        for name, process in self.processes.items():
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # If timeout expires, force kill
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def start_script(self, script_name: str) -> Optional[subprocess.Popen]:
+        """Start a scanner script."""
+        script_path = os.path.join(self.script_dir, script_name)
+        try:
+            # Start each process in its own process group
+            process = subprocess.Popen(
+                [sys.executable, script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid  # Create new process group
+            )
+            return process
+        except Exception:
+            return None
 
     async def wait_for_gps_file(self) -> bool:
         """Wait for GPS file to be created and contain valid data."""
@@ -712,33 +762,6 @@ class ScannerManager:
             retry_count += 1
             
         return False
-
-    def start_script(self, script_name: str) -> Optional[subprocess.Popen]:
-        """Start a scanner script."""
-        script_path = os.path.join(self.script_dir, script_name)
-        try:
-            process = subprocess.Popen(
-                [sys.executable, script_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            return process
-        except Exception:
-            return None
-
-    def cleanup_processes(self):
-        """Clean up processes on exit."""
-        self.running = False
-        self.file_monitor.running = False
-        for name, process in self.processes.items():
-            try:
-                process.terminate()
-                process.wait(timeout=5)
-            except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
 
     async def monitor_files(self):
         """Monitor files and update combined output."""
@@ -779,12 +802,6 @@ class ScannerManager:
 def main():
     """Main entry point."""
     manager = ScannerManager()
-    
-    def signal_handler(signum, frame):
-        manager.running = False
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
     
     try:
         asyncio.run(manager.run())

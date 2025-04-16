@@ -112,6 +112,27 @@ class BLEMonitor:
             39: 2480,
             **{i: 2402 + (2 * (i-1)) for i in range(1, 37)}
         }
+        
+        # Set up signal handlers
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        
+        # Store scanner instance
+        self.scanner = None
+
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals"""
+        self.running = False
+        asyncio.create_task(self.stop_scanner())
+        
+    async def stop_scanner(self):
+        """Stop the BLE scanner gracefully"""
+        if self.scanner:
+            try:
+                await self.scanner.stop()
+            except Exception:
+                pass
+        await self.cleanup()
 
     def load_existing_devices(self):
         """Load existing devices from the JSON file."""
@@ -284,17 +305,23 @@ class BLEMonitor:
         self.update_device_info(device, advertisement_data)
 
     async def run_scanner(self):
-        scanner = BleakScanner(detection_callback=self.detection_callback)
+        self.scanner = BleakScanner(detection_callback=self.detection_callback)
         
         while self.running:
             try:
-                await scanner.start()
+                await self.scanner.start()
                 while self.running:
                     await asyncio.sleep(1)
-                await scanner.stop()
+                await self.scanner.stop()
             except Exception as e:
                 print(f"Error during scanning: {e}")
                 await asyncio.sleep(1)
+            finally:
+                if self.scanner:
+                    try:
+                        await self.scanner.stop()
+                    except Exception:
+                        pass
 
     def cleanup_files(self):
         """Clean up JSON files created by the script."""
@@ -384,12 +411,6 @@ async def main():
     """Main entry point for BLE scanning."""
     ble_monitor = BLEMonitor()
     
-    def signal_handler(signum, frame):
-        ble_monitor.running = False
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
     try:
         print("Starting BLE scan... Press Ctrl+C to stop.")
         scan_task = asyncio.create_task(ble_monitor.run_scanner())
@@ -404,6 +425,12 @@ async def main():
     except Exception:
         sys.exit(1)
     finally:
+        ble_monitor.running = False
+        if scan_task:
+            try:
+                await scan_task
+            except Exception:
+                pass
         await ble_monitor.cleanup()
 
 if __name__ == "__main__":
